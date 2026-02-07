@@ -1,10 +1,10 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Play, Bug, Code2, FileCode, Terminal, Cpu, 
   ChevronRight, Zap, Layers, BookOpen,
   RotateCcw, StepForward, ArrowLeft, Sparkles,
-  Check, X
+  Check, X, SlidersHorizontal, Microscope, ChartColumn, GraduationCap, Camera
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
@@ -17,6 +17,11 @@ import { InstructionPipeline } from '@/components/lab/InstructionPipeline';
 import { PerformanceMonitor } from '@/components/lab/PerformanceMonitor';
 import { TraceLog } from '@/components/lab/TraceLog';
 import { DemoLibrary } from '@/components/lab/DemoLibrary';
+import { TimeTravelTimeline } from '@/components/lab/TimeTravelTimeline';
+import { SnapshotManager } from '@/components/lab/SnapshotManager';
+import { InstructionInspector } from '@/components/lab/InstructionInspector';
+import { ExecutionAnalyticsDashboard } from '@/components/lab/ExecutionAnalyticsDashboard';
+import { GuidedLearningPanel } from '@/components/lab/GuidedLearningPanel';
 
 import { compile, SAMPLE_PROGRAMS, CompilationResult } from '@/compiler/compiler';
 import { runProgram, createInitialState, ProgramOutput } from '@/emulator/cpu';
@@ -25,12 +30,31 @@ import { AssembledProgram, CPUState } from '@/types/cpu';
 import { executeStepWithDiagnostics } from '@/lab/debugger';
 import { ASSEMBLY_DEMOS } from '@/lab/demos';
 import { createInitialPerformanceMetrics, updatePerformanceMetrics } from '@/lab/performance';
-import { ExecutionSnapshot, PerformanceMetrics, PipelineState, TraceEntry } from '@/lab/types';
+import {
+  ExecutionAnalytics,
+  GuidedLearningContent,
+  InstructionInspectorData,
+  PerformanceMetrics,
+  PipelineState,
+  SavedSnapshot,
+  SnapshotComparison,
+  TraceEntry,
+} from '@/lab/types';
+import { buildInstructionInspectorData } from '@/lab/instruction-inspector';
+import { buildExecutionAnalytics } from '@/lab/analytics';
+import { buildGuidedLearningContent } from '@/lab/guided-learning';
+import {
+  compareCPUStates,
+  createExecutionSnapshot,
+  createSavedSnapshot,
+  restoreExecutionSnapshot,
+} from '@/lab/snapshots';
 import { cn } from '@/utils/cn';
 
 type ViewMode = 'home' | 'editor' | 'asm-editor' | 'debug';
 type EditorTab = 'source' | 'assembly' | 'output';
 type DebugOrigin = 'editor' | 'asm-editor';
+type DebugPanelTab = 'observe' | 'inspector' | 'snapshots' | 'analytics' | 'learn';
 
 const PIPELINE_STAGE_DELAY_MS = 120;
 const MAX_DEBUG_STEPS = 10000;
@@ -40,19 +64,14 @@ const DEFAULT_PIPELINE_STATE: PipelineState = {
   tick: 0,
 };
 
-function createSnapshot(
-  state: CPUState,
-  output: ProgramOutput[],
-  traceLength: number,
-  perf: PerformanceMetrics
-): ExecutionSnapshot {
-  return {
-    state,
-    output: [...output],
-    outputAddedCount: 0,
-    traceLength,
-    perf,
-  };
+function normalizeSource(source: string): string {
+  return source.replace(/\s+/g, ' ').trim();
+}
+
+function resolveDemoIdFromSource(source: string): string | null {
+  const normalized = normalizeSource(source);
+  const match = ASSEMBLY_DEMOS.find((demo) => normalizeSource(demo.source) === normalized);
+  return match?.id ?? null;
 }
 
 export function App() {
@@ -69,13 +88,21 @@ export function App() {
   // Debug state
   const [debugState, setDebugState] = useState<CPUState>(createInitialState);
   const [debugOutput, setDebugOutput] = useState<ProgramOutput[]>([]);
-  const [debugSnapshots, setDebugSnapshots] = useState<ExecutionSnapshot[]>([]);
+  const [debugSnapshots, setDebugSnapshots] = useState<Array<ReturnType<typeof createExecutionSnapshot>>>([]);
+  const [timelineCursor, setTimelineCursor] = useState(0);
   const [traceLog, setTraceLog] = useState<TraceEntry[]>([]);
   const [previousDebugState, setPreviousDebugState] = useState<CPUState | null>(null);
   const [pipelineState, setPipelineState] = useState<PipelineState>(DEFAULT_PIPELINE_STATE);
   const [performanceMetrics, setPerformanceMetrics] = useState<PerformanceMetrics>(createInitialPerformanceMetrics);
   const [changedMemoryWords, setChangedMemoryWords] = useState<number[]>([]);
   const [breakpoints, setBreakpoints] = useState<Set<number>>(new Set());
+  const [savedSnapshots, setSavedSnapshots] = useState<SavedSnapshot[]>([]);
+  const [snapshotCompareAId, setSnapshotCompareAId] = useState<string | null>(null);
+  const [snapshotCompareBId, setSnapshotCompareBId] = useState<string | null>(null);
+  const [selectedInstructionIndex, setSelectedInstructionIndex] = useState<number | null>(null);
+  const [guidedModeEnabled, setGuidedModeEnabled] = useState(true);
+  const [activeDemoId, setActiveDemoId] = useState<string | null>(null);
+  const [debugPanelTab, setDebugPanelTab] = useState<DebugPanelTab>('observe');
   const [debugStatus, setDebugStatus] = useState<string>('Ready');
   const [isStepping, setIsStepping] = useState(false);
 
@@ -131,12 +158,14 @@ export function App() {
     setPipelineState((prev) => ({ ...prev, stage: 'idle' }));
   }, [pause]);
 
-  const initializeDebugSession = useCallback((program: AssembledProgram, origin: DebugOrigin) => {
+  const initializeDebugSession = useCallback((program: AssembledProgram, origin: DebugOrigin, demoId: string | null = null) => {
     const initialState = createInitialState();
     const initialPerf = createInitialPerformanceMetrics();
+    const initialSnapshot = createExecutionSnapshot(initialState, [], 0, initialPerf);
 
     setDebugProgram(program);
     setDebugOrigin(origin);
+    setActiveDemoId(demoId);
     setDebugState(initialState);
     setPreviousDebugState(null);
     setDebugOutput([]);
@@ -145,17 +174,60 @@ export function App() {
     setPerformanceMetrics(initialPerf);
     setChangedMemoryWords([]);
     setBreakpoints(new Set());
-    setDebugSnapshots([createSnapshot(initialState, [], 0, initialPerf)]);
+    setSavedSnapshots([]);
+    setSnapshotCompareAId(null);
+    setSnapshotCompareBId(null);
+    setSelectedInstructionIndex(0);
+    setTimelineCursor(0);
+    setDebugPanelTab('observe');
+    setDebugSnapshots([initialSnapshot]);
     setDebugStatus('Ready to step through the program.');
     setViewMode('debug');
   }, []);
 
+  const seekTimelineToIndex = useCallback((targetIndex: number) => {
+    if (debugSnapshots.length === 0) {
+      return;
+    }
+
+    const safeIndex = Math.max(0, Math.min(targetIndex, debugSnapshots.length - 1));
+    const restoredSnapshot = restoreExecutionSnapshot(debugSnapshots[safeIndex]);
+    const previousSnapshot = safeIndex > 0
+      ? restoreExecutionSnapshot(debugSnapshots[safeIndex - 1])
+      : null;
+    const visibleTrace = traceLog.slice(0, restoredSnapshot.traceLength);
+    const lastTraceEntry = visibleTrace[visibleTrace.length - 1];
+
+    setTimelineCursor(safeIndex);
+    setDebugState(restoredSnapshot.state);
+    setPreviousDebugState(previousSnapshot?.state ?? null);
+    setDebugOutput(restoredSnapshot.output);
+    setPerformanceMetrics(restoredSnapshot.perf);
+    setChangedMemoryWords(lastTraceEntry?.changedMemoryWords ?? []);
+    setPipelineState((prev) => ({
+      ...prev,
+      stage: 'idle',
+      instructionIndex: restoredSnapshot.state.registers.IP,
+      tick: prev.tick + 1,
+    }));
+    setSelectedInstructionIndex(restoredSnapshot.state.registers.IP);
+    setDebugStatus(`Time-travel restored to step ${safeIndex}.`);
+  }, [debugSnapshots, traceLog]);
+
   const executeCurrentInstruction = useCallback((stepLabel: 'Step Into' | 'Step Over'): boolean => {
-    if (!debugProgram || debugState.halted) {
+    if (!debugProgram || debugState.halted || debugSnapshots.length === 0) {
       return false;
     }
 
-    const ip = debugState.registers.IP;
+    const safeTimelineIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+    const activeSnapshot = restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex]);
+    const branchSnapshots = debugSnapshots.slice(0, safeTimelineIndex + 1);
+    const branchTrace = traceLog.slice(0, activeSnapshot.traceLength);
+    const currentState = activeSnapshot.state;
+    const currentOutput = activeSnapshot.output;
+    const currentPerf = activeSnapshot.perf;
+
+    const ip = currentState.registers.IP;
     if (ip < 0 || ip >= debugProgram.instructions.length) {
       setDebugState((state) => ({ ...state, halted: true, error: 'IP out of bounds' }));
       setDebugStatus('Execution halted: IP out of bounds.');
@@ -164,10 +236,10 @@ export function App() {
 
     const instruction = debugProgram.instructions[ip];
     const diagnostics = executeStepWithDiagnostics({
-      state: debugState,
+      state: currentState,
       instruction,
       labels: debugProgram.labels,
-      stepNumber: traceLog.length + 1,
+      stepNumber: branchTrace.length + 1,
       stepStartedAtMs: performance.now(),
     });
 
@@ -176,27 +248,29 @@ export function App() {
       + diagnostics.changedMemoryWords.length;
 
     const nextPerf = updatePerformanceMetrics(
-      performanceMetrics,
+      currentPerf,
       diagnostics.cycles,
       changedSignalCount,
       diagnostics.traceEntry.timestampMs
     );
-    const nextTrace = [...traceLog, diagnostics.traceEntry];
+    const nextTrace = [...branchTrace, diagnostics.traceEntry];
     const nextOutput = diagnostics.output.length > 0
-      ? [...debugOutput, ...diagnostics.output]
-      : [...debugOutput];
+      ? [...currentOutput, ...diagnostics.output]
+      : [...currentOutput];
     const nextSnapshots = [
-      ...debugSnapshots,
-      createSnapshot(diagnostics.nextState, nextOutput, nextTrace.length, nextPerf),
+      ...branchSnapshots,
+      createExecutionSnapshot(diagnostics.nextState, nextOutput, nextTrace.length, nextPerf),
     ];
 
-    setPreviousDebugState(debugState);
+    setPreviousDebugState(currentState);
     setDebugState(diagnostics.nextState);
     setDebugOutput(nextOutput);
     setTraceLog(nextTrace);
     setPerformanceMetrics(nextPerf);
     setChangedMemoryWords(diagnostics.changedMemoryWords);
     setDebugSnapshots(nextSnapshots);
+    setTimelineCursor(nextSnapshots.length - 1);
+    setSelectedInstructionIndex(diagnostics.nextState.registers.IP);
     setDebugStatus(`${stepLabel}: ${diagnostics.traceEntry.instructionText}`);
 
     return true;
@@ -204,9 +278,8 @@ export function App() {
     debugProgram,
     debugState,
     traceLog,
-    performanceMetrics,
-    debugOutput,
     debugSnapshots,
+    timelineCursor,
   ]);
 
   const runDebugStep = useCallback(async (stepLabel: 'Step Into' | 'Step Over') => {
@@ -237,30 +310,16 @@ export function App() {
   }, [runDebugStep]);
 
   const debugStepBack = useCallback(() => {
-    if (debugSnapshots.length <= 1) {
+    if (timelineCursor <= 0) {
       return;
     }
-
-    const nextSnapshots = [...debugSnapshots];
-    nextSnapshots.pop();
-    const snapshot = nextSnapshots[nextSnapshots.length - 1];
-    const previousSnapshot = nextSnapshots[nextSnapshots.length - 2];
-    const nextTrace = traceLog.slice(0, snapshot.traceLength);
-
-    setDebugSnapshots(nextSnapshots);
-    setDebugState(snapshot.state);
-    setPreviousDebugState(previousSnapshot?.state ?? null);
-    setDebugOutput(snapshot.output);
-    setTraceLog(nextTrace);
-    setPerformanceMetrics(snapshot.perf);
-    setChangedMemoryWords([]);
-    setPipelineState((prev) => ({ ...prev, stage: 'idle', instructionIndex: snapshot.state.registers.IP, tick: prev.tick + 1 }));
-    setDebugStatus('Stepped back one state snapshot.');
-  }, [debugSnapshots, traceLog]);
+    seekTimelineToIndex(timelineCursor - 1);
+  }, [seekTimelineToIndex, timelineCursor]);
 
   const debugReset = useCallback(() => {
     const initialState = createInitialState();
     const initialPerf = createInitialPerformanceMetrics();
+    const initialSnapshot = createExecutionSnapshot(initialState, [], 0, initialPerf);
     setDebugState(initialState);
     setPreviousDebugState(null);
     setDebugOutput([]);
@@ -268,21 +327,30 @@ export function App() {
     setPerformanceMetrics(initialPerf);
     setChangedMemoryWords([]);
     setPipelineState({ ...DEFAULT_PIPELINE_STATE, instructionIndex: 0 });
-    setDebugSnapshots([createSnapshot(initialState, [], 0, initialPerf)]);
+    setDebugSnapshots([initialSnapshot]);
+    setTimelineCursor(0);
+    setSelectedInstructionIndex(0);
+    setSavedSnapshots([]);
+    setSnapshotCompareAId(null);
+    setSnapshotCompareBId(null);
     setDebugStatus('CPU state reset.');
   }, []);
 
   const debugRunToEnd = useCallback(() => {
-    if (!debugProgram || debugState.halted || isStepping) {
+    if (!debugProgram || debugState.halted || isStepping || debugSnapshots.length === 0) {
       return;
     }
 
-    let currentState = debugState;
-    let previousState = previousDebugState;
-    let currentOutput = [...debugOutput];
-    let currentTrace = [...traceLog];
-    let currentPerf = performanceMetrics;
-    const currentSnapshots = [...debugSnapshots];
+    const safeTimelineIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+    const activeSnapshot = restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex]);
+    let currentState = activeSnapshot.state;
+    let previousState = safeTimelineIndex > 0
+      ? restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex - 1]).state
+      : null;
+    let currentOutput = [...activeSnapshot.output];
+    let currentTrace = traceLog.slice(0, activeSnapshot.traceLength);
+    let currentPerf = activeSnapshot.perf;
+    const currentSnapshots = debugSnapshots.slice(0, safeTimelineIndex + 1);
     let lastMemoryChanges: number[] = [];
     let steps = 0;
 
@@ -326,7 +394,7 @@ export function App() {
       previousState = currentState;
       currentState = diagnostics.nextState;
       lastMemoryChanges = diagnostics.changedMemoryWords;
-      currentSnapshots.push(createSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
+      currentSnapshots.push(createExecutionSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
       steps++;
 
       if (breakpoints.has(currentState.registers.IP)) {
@@ -341,7 +409,7 @@ export function App() {
 
     const lastSnapshotState = currentSnapshots[currentSnapshots.length - 1]?.state;
     if (lastSnapshotState !== currentState) {
-      currentSnapshots.push(createSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
+      currentSnapshots.push(createExecutionSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
     }
 
     setPreviousDebugState(previousState);
@@ -351,6 +419,8 @@ export function App() {
     setPerformanceMetrics(currentPerf);
     setChangedMemoryWords(lastMemoryChanges);
     setDebugSnapshots(currentSnapshots);
+    setTimelineCursor(currentSnapshots.length - 1);
+    setSelectedInstructionIndex(currentState.registers.IP);
     setPipelineState((prev) => ({ ...prev, stage: 'idle', instructionIndex: currentState.registers.IP, tick: prev.tick + 1 }));
 
     if (currentState.halted) {
@@ -360,14 +430,12 @@ export function App() {
     }
   }, [
     breakpoints,
-    debugOutput,
     debugProgram,
     debugSnapshots,
     debugState,
     isStepping,
-    performanceMetrics,
-    previousDebugState,
     traceLog,
+    timelineCursor,
   ]);
 
   const toggleBreakpoint = useCallback((address: number) => {
@@ -381,6 +449,122 @@ export function App() {
       return next;
     });
   }, []);
+
+  const saveNamedSnapshot = useCallback(() => {
+    if (debugSnapshots.length === 0) {
+      return;
+    }
+
+    const safeIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+    const baseSnapshot = restoreExecutionSnapshot(debugSnapshots[safeIndex]);
+    const label = `Step ${safeIndex} @ IP ${formatHex(baseSnapshot.state.registers.IP)}`;
+    const namedSnapshot = createSavedSnapshot(label, safeIndex, baseSnapshot);
+
+    setSavedSnapshots((current) => [namedSnapshot, ...current].slice(0, 32));
+    setSnapshotCompareAId((current) => current ?? namedSnapshot.id);
+    setSnapshotCompareBId((current) => {
+      if (current) {
+        return current;
+      }
+      if (snapshotCompareAId && snapshotCompareAId !== namedSnapshot.id) {
+        return namedSnapshot.id;
+      }
+      return null;
+    });
+    setDebugStatus(`Saved snapshot "${namedSnapshot.label}".`);
+  }, [debugSnapshots, timelineCursor, snapshotCompareAId]);
+
+  const restoreNamedSnapshot = useCallback((snapshotId: string) => {
+    const namedSnapshot = savedSnapshots.find((snapshot) => snapshot.id === snapshotId);
+    if (!namedSnapshot) {
+      return;
+    }
+
+    const restored = createExecutionSnapshot(
+      namedSnapshot.state,
+      namedSnapshot.output,
+      namedSnapshot.traceLength,
+      namedSnapshot.perf
+    );
+    const safeIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+    const branchSnapshots = debugSnapshots.slice(0, safeIndex + 1);
+    const previousState = branchSnapshots.length > 0
+      ? restoreExecutionSnapshot(branchSnapshots[branchSnapshots.length - 1]).state
+      : null;
+    const nextSnapshots = [...branchSnapshots, restored];
+    const nextTrace = traceLog.slice(0, Math.min(traceLog.length, namedSnapshot.traceLength));
+
+    setDebugSnapshots(nextSnapshots);
+    setTraceLog(nextTrace);
+    setTimelineCursor(nextSnapshots.length - 1);
+    setDebugState(restored.state);
+    setPreviousDebugState(previousState);
+    setDebugOutput(restored.output);
+    setPerformanceMetrics(restored.perf);
+    setChangedMemoryWords([]);
+    setSelectedInstructionIndex(restored.state.registers.IP);
+    setPipelineState((prev) => ({
+      ...prev,
+      stage: 'idle',
+      instructionIndex: restored.state.registers.IP,
+      tick: prev.tick + 1,
+    }));
+    setDebugStatus(`Restored snapshot "${namedSnapshot.label}".`);
+  }, [debugSnapshots, savedSnapshots, timelineCursor, traceLog]);
+
+  const visibleTrace = useMemo(() => {
+    return traceLog.slice(0, Math.min(timelineCursor, traceLog.length));
+  }, [timelineCursor, traceLog]);
+
+  const executionAnalytics = useMemo<ExecutionAnalytics>(() => {
+    return buildExecutionAnalytics(visibleTrace);
+  }, [visibleTrace]);
+
+  const selectedInstructionAddress = selectedInstructionIndex ?? debugState.registers.IP;
+  const selectedInstruction = useMemo(() => {
+    if (!debugProgram) {
+      return null;
+    }
+    if (selectedInstructionAddress < 0 || selectedInstructionAddress >= debugProgram.instructions.length) {
+      return null;
+    }
+    return debugProgram.instructions[selectedInstructionAddress];
+  }, [debugProgram, selectedInstructionAddress]);
+
+  const selectedInstructionLastTrace = useMemo(() => {
+    for (let i = visibleTrace.length - 1; i >= 0; i--) {
+      const entry = visibleTrace[i];
+      if (entry.instructionAddress === selectedInstructionAddress) {
+        return entry;
+      }
+    }
+    return null;
+  }, [selectedInstructionAddress, visibleTrace]);
+
+  const inspectorData = useMemo<InstructionInspectorData | null>(() => {
+    return buildInstructionInspectorData(selectedInstruction, selectedInstructionLastTrace);
+  }, [selectedInstruction, selectedInstructionLastTrace]);
+
+  const guidedLearningContent = useMemo<GuidedLearningContent>(() => {
+    return buildGuidedLearningContent(
+      selectedInstruction,
+      inspectorData,
+      timelineCursor,
+      activeDemoId
+    );
+  }, [activeDemoId, inspectorData, selectedInstruction, timelineCursor]);
+
+  const snapshotComparison = useMemo<SnapshotComparison | null>(() => {
+    if (!snapshotCompareAId || !snapshotCompareBId || snapshotCompareAId === snapshotCompareBId) {
+      return null;
+    }
+    const snapshotA = savedSnapshots.find((item) => item.id === snapshotCompareAId);
+    const snapshotB = savedSnapshots.find((item) => item.id === snapshotCompareBId);
+    if (!snapshotA || !snapshotB) {
+      return null;
+    }
+    return compareCPUStates(snapshotA.state, snapshotB.state);
+  }, [savedSnapshots, snapshotCompareAId, snapshotCompareBId]);
 
   const runAssemblySource = useCallback((source: string): string => {
     const program = assemble(source);
@@ -441,7 +625,7 @@ export function App() {
     setCompilationResult(result);
     
     if (result.success && result.program) {
-      initializeDebugSession(result.program, 'editor');
+      initializeDebugSession(result.program, 'editor', null);
     }
   }, [initializeDebugSession, sourceCode]);
 
@@ -756,6 +940,7 @@ print "Hello!"`}</pre>
     const activeAsmCode = asmCode || DEFAULT_ASM;
 
     const handleAsmRun = () => {
+      setActiveDemoId(resolveDemoIdFromSource(activeAsmCode));
       setRunOutput(runAssemblySource(activeAsmCode));
     };
 
@@ -766,27 +951,30 @@ print "Hello!"`}</pre>
         setRunOutput(`Error:\n${hardErrors.map((error) => `Line ${error.line}: ${error.message}`).join('\n')}`);
         return;
       }
-      initializeDebugSession(program, 'asm-editor');
+      initializeDebugSession(program, 'asm-editor', resolveDemoIdFromSource(activeAsmCode));
     };
 
-    const loadDemo = (source: string) => {
+    const loadDemo = (source: string, demoId: string | null) => {
       setAsmCode(source);
+      setActiveDemoId(demoId);
     };
 
-    const loadAndRunDemo = (source: string) => {
+    const loadAndRunDemo = (source: string, demoId: string | null) => {
       setAsmCode(source);
+      setActiveDemoId(demoId);
       setRunOutput(runAssemblySource(source));
     };
 
-    const loadAndDebugDemo = (source: string) => {
+    const loadAndDebugDemo = (source: string, demoId: string | null) => {
       setAsmCode(source);
+      setActiveDemoId(demoId);
       const program = assemble(source);
       const hardErrors = program.errors.filter((error) => error.type === 'error');
       if (hardErrors.length > 0) {
         setRunOutput(`Error:\n${hardErrors.map((error) => `Line ${error.line}: ${error.message}`).join('\n')}`);
         return;
       }
-      initializeDebugSession(program, 'asm-editor');
+      initializeDebugSession(program, 'asm-editor', demoId);
     };
 
     return (
@@ -830,7 +1018,10 @@ print "Hello!"`}</pre>
           <div className="flex-1 p-4">
             <CodeEditor
               value={asmCode || DEFAULT_ASM}
-              onChange={setAsmCode}
+              onChange={(value) => {
+                setAsmCode(value);
+                setActiveDemoId(null);
+              }}
               language="assembly"
               className="h-full"
             />
@@ -854,9 +1045,9 @@ print "Hello!"`}</pre>
               <CardContent>
                 <DemoLibrary
                   demos={ASSEMBLY_DEMOS}
-                  onLoad={(demo) => loadDemo(demo.source)}
-                  onLoadAndRun={(demo) => loadAndRunDemo(demo.source)}
-                  onLoadAndDebug={(demo) => loadAndDebugDemo(demo.source)}
+                  onLoad={(demo) => loadDemo(demo.source, demo.id)}
+                  onLoadAndRun={(demo) => loadAndRunDemo(demo.source, demo.id)}
+                  onLoadAndDebug={(demo) => loadAndDebugDemo(demo.source, demo.id)}
                 />
               </CardContent>
             </Card>
@@ -891,6 +1082,9 @@ print "Hello!"`}</pre>
     const currentInstructionText = currentInstruction
       ? `${currentInstruction.opcode} ${currentInstruction.operands.join(', ')}`.trim()
       : 'End of program';
+    const timelineMax = Math.max(0, debugSnapshots.length - 1);
+    const isRewound = timelineCursor < timelineMax;
+    const traceForDisplay = visibleTrace;
     const sortedBreakpoints = Array.from(breakpoints).sort((a, b) => a - b);
     const canStep = !debugState.halted && !isStepping;
     
@@ -909,11 +1103,19 @@ print "Hello!"`}</pre>
               <span className="font-semibold text-white">Debugger</span>
             </div>
             <Badge variant={debugState.halted ? 'error' : isStepping ? 'info' : 'success'} dot>
-              {debugState.halted ? 'Halted' : isStepping ? 'Stepping' : 'Ready'}
+              {debugState.halted ? 'Halted' : isStepping ? 'Stepping' : isRewound ? 'Time-Travel' : 'Ready'}
             </Badge>
           </div>
           
           <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={saveNamedSnapshot}
+              icon={<Camera className="w-4 h-4" />}
+            >
+              Snapshot
+            </Button>
             <Button 
               variant="secondary" 
               size="sm" 
@@ -926,7 +1128,7 @@ print "Hello!"`}</pre>
               variant="secondary" 
               size="sm" 
               onClick={debugStepBack}
-              disabled={debugSnapshots.length <= 1 || isStepping}
+              disabled={timelineCursor <= 0 || isStepping}
               icon={<ArrowLeft className="w-4 h-4" />}
             >
               Back
@@ -965,6 +1167,16 @@ print "Hello!"`}</pre>
         <div className="flex-1 flex overflow-hidden">
           {/* Instructions */}
           <div className="flex-1 p-4 overflow-hidden flex flex-col gap-4">
+            {guidedModeEnabled && (
+              <Card className="border-[#45d1a3]/30 bg-[#11312a]">
+                <CardContent>
+                  <div className="text-xs text-[#7adfb1] uppercase tracking-wider mb-1">Step Explanation Overlay</div>
+                  <div className="text-sm text-white mb-1">{guidedLearningContent.title}</div>
+                  <div className="text-xs text-gray-300">{guidedLearningContent.explanation}</div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card className="flex-1 min-h-0">
               <CardHeader title="Instructions" icon={<Code2 className="w-4 h-4" />} />
               <CardContent noPadding className="overflow-auto h-full">
@@ -972,17 +1184,21 @@ print "Hello!"`}</pre>
                   {debugProgram.instructions.map((instr, i) => {
                     const isCurrent = i === debugState.registers.IP;
                     const hasBreakpoint = breakpoints.has(i);
+                    const isSelected = i === selectedInstructionAddress;
                     return (
                       <motion.div
                         key={i}
                         initial={false}
+                        onClick={() => setSelectedInstructionIndex(i)}
                         animate={isCurrent ? { backgroundColor: 'rgba(240, 180, 91, 0.12)' } : { backgroundColor: 'transparent' }}
                         className={cn(
-                          'flex items-center px-3 py-1 border-l-2 transition-all',
+                          'flex items-center px-3 py-1 border-l-2 transition-all cursor-pointer',
                           isCurrent
                             ? 'border-[#f0b45b]'
                             : hasBreakpoint
                               ? 'border-[#e05d5d]/55'
+                              : isSelected
+                                ? 'border-[#45d1a3]/50 bg-[#45d1a3]/5'
                               : 'border-transparent'
                         )}
                       >
@@ -995,7 +1211,7 @@ print "Hello!"`}</pre>
                             hasBreakpoint ? 'text-[#f38b8b]' : 'text-[#33413e] hover:text-[#f38b8b]'
                           )}
                         >
-                          {hasBreakpoint ? '●' : '○'}
+                          {hasBreakpoint ? '*' : '.'}
                         </button>
                         <span className="w-8 text-gray-600 text-xs">{i.toString().padStart(3, '0')}</span>
                         {isCurrent && <ChevronRight className="w-4 h-4 text-[#f0b45b] mr-2" />}
@@ -1009,129 +1225,207 @@ print "Hello!"`}</pre>
             </Card>
 
             <Card className="h-[38%] min-h-[220px]">
-              <CardHeader title="Execution Trace" icon={<Terminal className="w-4 h-4" />} />
-              <CardContent className="h-[calc(100%-56px)]">
-                <TraceLog entries={traceLog} />
+              <CardHeader title="Time Travel + Trace" icon={<SlidersHorizontal className="w-4 h-4" />} />
+              <CardContent className="h-[calc(100%-56px)] space-y-3">
+                <TimeTravelTimeline
+                  snapshots={debugSnapshots}
+                  trace={traceLog}
+                  activeIndex={timelineCursor}
+                  onSeek={seekTimelineToIndex}
+                />
+                <TraceLog entries={traceForDisplay} maxEntries={40} />
               </CardContent>
             </Card>
           </div>
 
           {/* Side Panel */}
           <div className="w-96 border-l border-[#1f2b29] bg-[#0f1716] p-4 overflow-y-auto space-y-4">
-            <Card>
-              <CardHeader title="Current Instruction" icon={<Zap className="w-4 h-4" />} />
-              <CardContent>
-                {currentInstruction ? (
-                  <div className="font-mono space-y-2">
-                    <div>
-                      <span className="text-2xl font-bold text-[#f0b45b]">{currentInstruction.opcode}</span>
-                      <span className="text-lg text-gray-300 ml-3">{currentInstruction.operands.join(', ')}</span>
-                    </div>
-                    <p className="text-xs text-gray-500">IP: {formatHex(currentIp)}</p>
-                  </div>
-                ) : (
-                  <span className="text-gray-500">End of program</span>
-                )}
-                <p className="text-xs text-[#7adfb1] mt-3">{debugStatus}</p>
-                {sortedBreakpoints.length > 0 && (
-                  <div className="mt-3">
-                    <span className="text-xs text-gray-500 uppercase tracking-wider">Breakpoints</span>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {sortedBreakpoints.map((bp) => (
-                        <span key={bp} className="rounded border border-[#e05d5d]/35 bg-[#e05d5d]/10 px-2 py-0.5 font-mono text-xs text-[#f38b8b]">
-                          {formatHex(bp)}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <Tabs
+              tabs={[
+                { id: 'observe', label: 'Observe', icon: <Cpu className="w-4 h-4" /> },
+                { id: 'inspector', label: 'Inspector', icon: <Microscope className="w-4 h-4" /> },
+                { id: 'snapshots', label: 'Snapshots', icon: <Camera className="w-4 h-4" /> },
+                { id: 'analytics', label: 'Analytics', icon: <ChartColumn className="w-4 h-4" /> },
+                { id: 'learn', label: 'Learn', icon: <GraduationCap className="w-4 h-4" /> },
+              ]}
+              activeTab={debugPanelTab}
+              onTabChange={(tab) => setDebugPanelTab(tab as DebugPanelTab)}
+            />
 
-            <Card>
-              <CardHeader title="Instruction Pipeline" icon={<Layers className="w-4 h-4" />} />
-              <CardContent>
-                <InstructionPipeline pipeline={pipelineState} instructionText={currentInstructionText} />
-              </CardContent>
-            </Card>
+            {debugPanelTab === 'observe' && (
+              <>
+                <Card>
+                  <CardHeader title="Current Instruction" icon={<Zap className="w-4 h-4" />} />
+                  <CardContent>
+                    {currentInstruction ? (
+                      <div className="font-mono space-y-2">
+                        <div>
+                          <span className="text-2xl font-bold text-[#f0b45b]">{currentInstruction.opcode}</span>
+                          <span className="text-lg text-gray-300 ml-3">{currentInstruction.operands.join(', ')}</span>
+                        </div>
+                        <p className="text-xs text-gray-500">IP: {formatHex(currentIp)}</p>
+                      </div>
+                    ) : (
+                      <span className="text-gray-500">End of program</span>
+                    )}
+                    <p className="text-xs text-[#7adfb1] mt-3">{debugStatus}</p>
+                    {sortedBreakpoints.length > 0 && (
+                      <div className="mt-3">
+                        <span className="text-xs text-gray-500 uppercase tracking-wider">Breakpoints</span>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {sortedBreakpoints.map((bp) => (
+                            <span key={bp} className="rounded border border-[#e05d5d]/35 bg-[#e05d5d]/10 px-2 py-0.5 font-mono text-xs text-[#f38b8b]">
+                              {formatHex(bp)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
 
-            <Card>
-              <CardHeader title="Live CPU Visualization" icon={<Cpu className="w-4 h-4" />} />
-              <CardContent>
-                <RegisterDisplay 
-                  registers={debugState.registers}
-                  previousRegisters={previousDebugState?.registers}
-                  showAllRegisters={true}
-                />
-              </CardContent>
-            </Card>
+                <Card>
+                  <CardHeader title="Instruction Pipeline" icon={<Layers className="w-4 h-4" />} />
+                  <CardContent>
+                    <InstructionPipeline pipeline={pipelineState} instructionText={currentInstructionText} />
+                  </CardContent>
+                </Card>
 
-            <Card>
-              <CardHeader title="Performance Monitor" icon={<Cpu className="w-4 h-4" />} />
-              <CardContent>
-                <PerformanceMonitor metrics={performanceMetrics} />
-              </CardContent>
-            </Card>
+                <Card>
+                  <CardHeader title="Live CPU Visualization" icon={<Cpu className="w-4 h-4" />} />
+                  <CardContent>
+                    <RegisterDisplay
+                      registers={debugState.registers}
+                      previousRegisters={previousDebugState?.registers}
+                      showAllRegisters={true}
+                    />
+                  </CardContent>
+                </Card>
 
-            <Card>
-              <CardHeader title="Memory" icon={<Layers className="w-4 h-4" />} />
-              <CardContent>
-                <div className="space-y-4">
-                  <div>
-                    <span className="text-xs text-gray-500 uppercase tracking-wider">Stack (SP)</span>
-                    <div className="mt-2">
-                      <MemoryView
-                        memory={debugState.memory}
-                        start={(Math.max(0, debugState.registers.SP - 10) & ~1)}
-                        words={6}
-                        highlightAddress={debugState.registers.SP}
-                        changedAddresses={changedMemoryWords}
-                      />
+                <Card>
+                  <CardHeader title="Performance Monitor" icon={<Cpu className="w-4 h-4" />} />
+                  <CardContent>
+                    <PerformanceMonitor metrics={performanceMetrics} />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Memory" icon={<Layers className="w-4 h-4" />} />
+                  <CardContent>
+                    <div className="space-y-4">
+                      <div>
+                        <span className="text-xs text-gray-500 uppercase tracking-wider">Stack (SP)</span>
+                        <div className="mt-2">
+                          <MemoryView
+                            memory={debugState.memory}
+                            start={(Math.max(0, debugState.registers.SP - 10) & ~1)}
+                            words={6}
+                            highlightAddress={debugState.registers.SP}
+                            changedAddresses={changedMemoryWords}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-xs text-gray-500 uppercase tracking-wider">Data Segment (0100h)</span>
+                        <div className="mt-2">
+                          <MemoryView
+                            memory={debugState.memory}
+                            start={0x0100}
+                            words={8}
+                            changedAddresses={changedMemoryWords}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-xs text-gray-500 uppercase tracking-wider">Recent Writes</span>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {changedMemoryWords.length > 0 ? (
+                            changedMemoryWords.map((address) => (
+                              <span key={address} className="rounded border border-[#45d1a3]/30 bg-[#45d1a3]/10 px-2 py-0.5 font-mono text-xs text-[#7adfb1]">
+                                {formatHex(address)}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-gray-500">No memory updates in last step.</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-gray-500 uppercase tracking-wider">Data Segment (0100h)</span>
-                    <div className="mt-2">
-                      <MemoryView
-                        memory={debugState.memory}
-                        start={0x0100}
-                        words={8}
-                        changedAddresses={changedMemoryWords}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-gray-500 uppercase tracking-wider">Recent Writes</span>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {changedMemoryWords.length > 0 ? (
-                        changedMemoryWords.map((address) => (
-                          <span key={address} className="rounded border border-[#45d1a3]/30 bg-[#45d1a3]/10 px-2 py-0.5 font-mono text-xs text-[#7adfb1]">
-                            {formatHex(address)}
-                          </span>
-                        ))
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Program Output" icon={<Terminal className="w-4 h-4" />} />
+                  <CardContent>
+                    <div className="font-mono text-sm">
+                      {debugOutput.length > 0 ? (
+                        <pre className="text-[#5de6a0] whitespace-pre-wrap">
+                          {formatOutput(debugOutput)}
+                        </pre>
                       ) : (
-                        <span className="text-xs text-gray-500">No memory updates in last step.</span>
+                        <span className="text-gray-500">No output yet</span>
                       )}
                     </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+                  </CardContent>
+                </Card>
+              </>
+            )}
 
-            <Card>
-              <CardHeader title="Program Output" icon={<Terminal className="w-4 h-4" />} />
-              <CardContent>
-                <div className="font-mono text-sm">
-                  {debugOutput.length > 0 ? (
-                    <pre className="text-[#5de6a0] whitespace-pre-wrap">
-                      {formatOutput(debugOutput)}
-                    </pre>
-                  ) : (
-                    <span className="text-gray-500">No output yet</span>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
+            {debugPanelTab === 'inspector' && (
+              <Card>
+                <CardHeader title="Instruction Inspector Mode" icon={<Microscope className="w-4 h-4" />} />
+                <CardContent>
+                  <InstructionInspector
+                    data={inspectorData}
+                    instructionAddress={selectedInstructionAddress}
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            {debugPanelTab === 'snapshots' && (
+              <Card>
+                <CardHeader title="CPU Snapshot System" icon={<Camera className="w-4 h-4" />} />
+                <CardContent>
+                  <SnapshotManager
+                    snapshots={savedSnapshots}
+                    compareAId={snapshotCompareAId}
+                    compareBId={snapshotCompareBId}
+                    comparison={snapshotComparison}
+                    onSaveCurrent={saveNamedSnapshot}
+                    onRestoreSnapshot={restoreNamedSnapshot}
+                    onCompareAChange={setSnapshotCompareAId}
+                    onCompareBChange={setSnapshotCompareBId}
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            {debugPanelTab === 'analytics' && (
+              <Card>
+                <CardHeader title="Execution Analytics Dashboard" icon={<ChartColumn className="w-4 h-4" />} />
+                <CardContent>
+                  <ExecutionAnalyticsDashboard
+                    analytics={executionAnalytics}
+                    activeStep={timelineCursor}
+                    onSeekStep={seekTimelineToIndex}
+                  />
+                </CardContent>
+              </Card>
+            )}
+
+            {debugPanelTab === 'learn' && (
+              <Card>
+                <CardHeader title="Guided Learning Mode" icon={<GraduationCap className="w-4 h-4" />} />
+                <CardContent>
+                  <GuidedLearningPanel
+                    enabled={guidedModeEnabled}
+                    content={guidedLearningContent}
+                    onToggle={setGuidedModeEnabled}
+                  />
+                </CardContent>
+              </Card>
+            )}
 
             {debugState.error && (
               <Card className="border-[#e05d5d]/40">
@@ -1147,8 +1441,12 @@ print "Hello!"`}</pre>
             <Card>
               <CardContent>
                 <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-500">Steps Executed</span>
-                  <span className="font-mono text-white">{debugSnapshots.length - 1}</span>
+                  <span className="text-gray-500">Timeline Position</span>
+                  <span className="font-mono text-white">{timelineCursor}/{timelineMax}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm mt-1">
+                  <span className="text-gray-500">Named Snapshots</span>
+                  <span className="font-mono text-white">{savedSnapshots.length}</span>
                 </div>
               </CardContent>
             </Card>
