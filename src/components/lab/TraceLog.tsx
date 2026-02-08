@@ -37,6 +37,16 @@ export function TraceLog({ entries, maxEntries = 80 }: TraceLogProps) {
               values={entry.changedMemoryWords.map((address) => formatHex(address))}
               valueClassName="text-[#7ab6ff]"
             />
+            <SignalChip
+              label="Rd"
+              values={entry.memoryReads.map((address) => formatHex(address))}
+              valueClassName="text-[#7adfb1]"
+            />
+            <SignalChip
+              label="Wr"
+              values={entry.memoryWrites.map((address) => formatHex(address))}
+              valueClassName="text-[#f0b45b]"
+            />
           </div>
           {entry.output.length > 0 && (
             <div className="mt-1 text-[11px] text-[#5de6a0]">

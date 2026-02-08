@@ -18,6 +18,8 @@ const KEYWORDS_ASM = [
   'AND', 'OR', 'XOR',
   'SHL', 'SAL', 'SHR', 'SAR',
   'PUSH', 'POP',
+  'CALL', 'RET', 'INT', 'IRET',
+  'IN', 'OUTP',
   'HLT', 'NOP', 'OUT', 'OUTC',
   'CLC', 'STC', 'CMC'
 ];
@@ -212,12 +214,12 @@ export function CodeEditor({ value, onChange, language = 'high-level', readOnly 
   };
 
   return (
-    <div className={cn('relative bg-[#0d1513] rounded-lg border border-[#1f2b29] overflow-hidden', className)}>
+    <div className={cn('relative panel-glass rounded-2xl border border-[#2a3c5d]/60 overflow-hidden shadow-[0_16px_40px_rgba(6,12,25,0.35)]', className)}>
       <div className="flex h-full">
         {/* Line Numbers */}
         <div
           ref={lineNumbersRef}
-          className="flex-shrink-0 w-12 bg-[#0b1110] border-r border-[#1f2b29] overflow-hidden select-none"
+          className="flex-shrink-0 w-12 bg-[linear-gradient(180deg,rgba(8,14,24,0.95),rgba(10,16,28,0.88))] border-r border-[#2a3c5d]/55 overflow-hidden select-none"
         >
           <div className="py-3 px-2">
             {lines.map((_, i) => (
@@ -225,7 +227,7 @@ export function CodeEditor({ value, onChange, language = 'high-level', readOnly 
                 key={i}
                 className={cn(
                   'text-right text-xs leading-6 h-6 font-mono',
-                  cursorLine === i ? 'text-[#45d1a3]' : 'text-gray-600'
+                  cursorLine === i ? 'text-[#6edfd2]' : 'text-[#4e668c]'
                 )}
               >
                 {i + 1}
@@ -256,7 +258,7 @@ export function CodeEditor({ value, onChange, language = 'high-level', readOnly 
             className={cn(
               'absolute inset-0 w-full h-full py-3 px-4 bg-transparent text-transparent caret-white',
               'resize-none outline-none font-mono text-sm leading-6',
-              'selection:bg-[#45d1a3]/30 code-editor'
+              'selection:bg-[#4ed8c9]/30 code-editor'
             )}
             spellCheck={false}
             style={{ tabSize: 2 }}
@@ -265,9 +267,9 @@ export function CodeEditor({ value, onChange, language = 'high-level', readOnly 
       </div>
 
       {/* Status Bar */}
-      <div className="absolute bottom-0 left-0 right-0 h-6 bg-[#152320] border-t border-[#1f2b29] flex items-center justify-between px-3 text-xs text-gray-500">
+      <div className="absolute bottom-0 left-0 right-0 h-6 bg-[linear-gradient(180deg,rgba(18,29,46,0.96),rgba(14,23,39,0.9))] border-t border-[#2a3c5d]/55 flex items-center justify-between px-3 text-xs text-[#88a0c5]">
         <span>Line {cursorLine + 1}, Column 1</span>
-        <span className="uppercase">{language}</span>
+        <span className="uppercase tracking-wide">{language}</span>
       </div>
     </div>
   );

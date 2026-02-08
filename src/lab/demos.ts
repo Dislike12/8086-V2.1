@@ -98,6 +98,41 @@ MATCH:
     OUT BX
     HLT`,
   },
+  {
+    id: 'call-stack',
+    title: 'CALL/RET Demo',
+    description: 'Demonstrates procedural call stack behavior and return flow.',
+    source: `; CALL/RET demo
+    MOV AX, 5
+    CALL DOUBLE_VALUE
+    OUT AX
+    HLT
+
+DOUBLE_VALUE:
+    ADD AX, AX
+    RET`,
+  },
+  {
+    id: 'interrupt-io',
+    title: 'Interrupt + I/O Demo',
+    description: 'Configures interrupt vector and performs memory-mapped port I/O.',
+    source: `; Interrupt + I/O demo
+    MOV AX, ISR_1
+    MOV [0002h], AX      ; vector table entry for INT 1
+
+    MOV AX, 77
+    OUTP 1, AX           ; write to port 1
+    IN BX, 1             ; read from port 1
+    OUT BX
+
+    INT 1
+    OUT AX
+    HLT
+
+ISR_1:
+    MOV AX, 1234h
+    IRET`,
+  },
 ];
 
 export const DEFAULT_DEMO = ASSEMBLY_DEMOS[0];

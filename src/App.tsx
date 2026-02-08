@@ -4,7 +4,7 @@ import {
   Play, Bug, Code2, FileCode, Terminal, Cpu, 
   ChevronRight, Zap, Layers, BookOpen,
   RotateCcw, StepForward, ArrowLeft, Sparkles,
-  Check, X, SlidersHorizontal, Microscope, ChartColumn, GraduationCap, Camera
+  Check, X, SlidersHorizontal, Microscope, ChartColumn, GraduationCap, Camera, Link2, FlaskConical, MonitorCog
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
@@ -22,27 +22,57 @@ import { SnapshotManager } from '@/components/lab/SnapshotManager';
 import { InstructionInspector } from '@/components/lab/InstructionInspector';
 import { ExecutionAnalyticsDashboard } from '@/components/lab/ExecutionAnalyticsDashboard';
 import { GuidedLearningPanel } from '@/components/lab/GuidedLearningPanel';
+import { WatchPanel } from '@/components/lab/WatchPanel';
+import { WatchpointPanel } from '@/components/lab/WatchpointPanel';
+import { BranchPredictorPanel } from '@/components/lab/BranchPredictorPanel';
+import { CacheSimulatorPanel } from '@/components/lab/CacheSimulatorPanel';
+import { HazardPanel } from '@/components/lab/HazardPanel';
+import { SourceRuntimeMapPanel } from '@/components/lab/SourceRuntimeMapPanel';
+import { ReplayPanel } from '@/components/lab/ReplayPanel';
+import { ChallengePanel } from '@/components/lab/ChallengePanel';
+import { TestbenchPanel } from '@/components/lab/TestbenchPanel';
+import { StackFramePanel } from '@/components/lab/StackFramePanel';
+import { InterruptIOPanel } from '@/components/lab/InterruptIOPanel';
 
 import { compile, SAMPLE_PROGRAMS, CompilationResult } from '@/compiler/compiler';
 import { runProgram, createInitialState, ProgramOutput } from '@/emulator/cpu';
 import { assemble } from '@/emulator/assembler';
-import { AssembledProgram, CPUState } from '@/types/cpu';
+import { AssembledProgram, CPUState, Instruction } from '@/types/cpu';
 import { executeStepWithDiagnostics } from '@/lab/debugger';
 import { ASSEMBLY_DEMOS } from '@/lab/demos';
 import { createInitialPerformanceMetrics, updatePerformanceMetrics } from '@/lab/performance';
 import {
+  BranchPredictorMode,
+  BranchPredictorStats,
+  CacheConfig,
+  CacheStats,
   ExecutionAnalytics,
   GuidedLearningContent,
+  HazardStats,
   InstructionInspectorData,
+  MemoryWatchpoint,
   PerformanceMetrics,
   PipelineState,
+  ReplaySession,
   SavedSnapshot,
+  SourceMapEntry,
   SnapshotComparison,
   TraceEntry,
+  WatchExpression,
+  WatchValue,
 } from '@/lab/types';
 import { buildInstructionInspectorData } from '@/lab/instruction-inspector';
 import { buildExecutionAnalytics } from '@/lab/analytics';
 import { buildGuidedLearningContent } from '@/lab/guided-learning';
+import { evaluateWatchExpressions } from '@/lab/watch';
+import { analyzeBranchPrediction } from '@/lab/branch-predictor';
+import { simulateCache } from '@/lab/cache-simulator';
+import { analyzePipelineHazards } from '@/lab/hazards';
+import { buildSourceMapEntries, findInstructionForSourceLine, findSourceLineForInstruction } from '@/lab/source-map';
+import { buildSymbolicHints } from '@/lab/symbolic-hints';
+import { CHALLENGES, getChallengeById } from '@/lab/challenges';
+import { AssertionResult, runTestbenchAssertions } from '@/lab/testbench';
+import { createReplaySession, parseReplaySession, serializeReplaySession } from '@/lab/replay';
 import {
   compareCPUStates,
   createExecutionSnapshot,
@@ -54,10 +84,19 @@ import { cn } from '@/utils/cn';
 type ViewMode = 'home' | 'editor' | 'asm-editor' | 'debug';
 type EditorTab = 'source' | 'assembly' | 'output';
 type DebugOrigin = 'editor' | 'asm-editor';
-type DebugPanelTab = 'observe' | 'inspector' | 'snapshots' | 'analytics' | 'learn';
+type DebugPanelTab = 'observe' | 'inspector' | 'snapshots' | 'analytics' | 'learn' | 'tools';
 
 const PIPELINE_STAGE_DELAY_MS = 120;
 const MAX_DEBUG_STEPS = 10000;
+const MAX_TRACE_FOR_REPLAY = 5000;
+const DEFAULT_CACHE_CONFIG: CacheConfig = {
+  policy: 'direct_mapped',
+  lineCount: 16,
+  lineSizeBytes: 2,
+};
+const DEFAULT_TESTBENCH_SCRIPT = `# Example assertions
+REG AX = 0
+HALTED true`;
 const DEFAULT_PIPELINE_STATE: PipelineState = {
   stage: 'idle',
   instructionIndex: null,
@@ -72,6 +111,14 @@ function resolveDemoIdFromSource(source: string): string | null {
   const normalized = normalizeSource(source);
   const match = ASSEMBLY_DEMOS.find((demo) => normalizeSource(demo.source) === normalized);
   return match?.id ?? null;
+}
+
+function overlapsWordRange(wordAddress: number, watchAddress: number, watchSize: number): boolean {
+  const wordStart = wordAddress;
+  const wordEnd = wordAddress + 2;
+  const rangeStart = watchAddress;
+  const rangeEnd = watchAddress + Math.max(1, watchSize);
+  return wordStart < rangeEnd && wordEnd > rangeStart;
 }
 
 export function App() {
@@ -105,6 +152,14 @@ export function App() {
   const [debugPanelTab, setDebugPanelTab] = useState<DebugPanelTab>('observe');
   const [debugStatus, setDebugStatus] = useState<string>('Ready');
   const [isStepping, setIsStepping] = useState(false);
+  const [watchExpressions, setWatchExpressions] = useState<WatchExpression[]>([]);
+  const [watchpoints, setWatchpoints] = useState<MemoryWatchpoint[]>([]);
+  const [branchPredictorMode, setBranchPredictorMode] = useState<BranchPredictorMode>('two_bit');
+  const [cacheConfig, setCacheConfig] = useState<CacheConfig>(DEFAULT_CACHE_CONFIG);
+  const [selectedChallengeId, setSelectedChallengeId] = useState<string | null>(null);
+  const [challengeResultMessage, setChallengeResultMessage] = useState<string | null>(null);
+  const [testbenchScript, setTestbenchScript] = useState(DEFAULT_TESTBENCH_SCRIPT);
+  const [lastReplaySession, setLastReplaySession] = useState<ReplaySession | null>(null);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -158,6 +213,67 @@ export function App() {
     setPipelineState((prev) => ({ ...prev, stage: 'idle' }));
   }, [pause]);
 
+  const addWatchExpression = useCallback((expression: string) => {
+    const cleaned = expression.trim();
+    if (!cleaned) {
+      return;
+    }
+    setWatchExpressions((current) => [
+      ...current,
+      { id: `watch-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`, expression: cleaned },
+    ]);
+  }, []);
+
+  const removeWatchExpression = useCallback((id: string) => {
+    setWatchExpressions((current) => current.filter((watch) => watch.id !== id));
+  }, []);
+
+  const addWatchpoint = useCallback((payload: { label: string; address: number; size: number; type: MemoryWatchpoint['type'] }) => {
+    setWatchpoints((current) => [
+      ...current,
+      {
+        id: `watchpoint-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        label: payload.label.trim() || `WP_${formatHex(payload.address)}`,
+        address: payload.address & 0xFFFF,
+        size: Math.max(1, payload.size),
+        type: payload.type,
+        enabled: true,
+      },
+    ]);
+  }, []);
+
+  const removeWatchpoint = useCallback((id: string) => {
+    setWatchpoints((current) => current.filter((watchpoint) => watchpoint.id !== id));
+  }, []);
+
+  const toggleWatchpoint = useCallback((id: string) => {
+    setWatchpoints((current) => current.map((watchpoint) => (
+      watchpoint.id === id
+        ? { ...watchpoint, enabled: !watchpoint.enabled }
+        : watchpoint
+    )));
+  }, []);
+
+  const getTriggeredWatchpoint = useCallback((
+    memoryReads: number[],
+    memoryWrites: number[],
+    changedWords: number[]
+  ): MemoryWatchpoint | null => {
+    const enabledWatchpoints = watchpoints.filter((watchpoint) => watchpoint.enabled);
+    for (const watchpoint of enabledWatchpoints) {
+      const addressesToCheck = watchpoint.type === 'read'
+        ? memoryReads
+        : watchpoint.type === 'write'
+          ? memoryWrites
+          : changedWords;
+      const hit = addressesToCheck.some((address) => overlapsWordRange(address, watchpoint.address, watchpoint.size));
+      if (hit) {
+        return watchpoint;
+      }
+    }
+    return null;
+  }, [watchpoints]);
+
   const initializeDebugSession = useCallback((program: AssembledProgram, origin: DebugOrigin, demoId: string | null = null) => {
     const initialState = createInitialState();
     const initialPerf = createInitialPerformanceMetrics();
@@ -181,6 +297,9 @@ export function App() {
     setTimelineCursor(0);
     setDebugPanelTab('observe');
     setDebugSnapshots([initialSnapshot]);
+    setWatchpoints([]);
+    setChallengeResultMessage(null);
+    setLastReplaySession(null);
     setDebugStatus('Ready to step through the program.');
     setViewMode('debug');
   }, []);
@@ -261,6 +380,14 @@ export function App() {
       ...branchSnapshots,
       createExecutionSnapshot(diagnostics.nextState, nextOutput, nextTrace.length, nextPerf),
     ];
+    const triggeredWatchpoint = getTriggeredWatchpoint(
+      diagnostics.memoryReads,
+      diagnostics.memoryWrites,
+      diagnostics.changedMemoryWords
+    );
+    const watchpointSuffix = triggeredWatchpoint
+      ? ` | Watchpoint hit: ${triggeredWatchpoint.label}`
+      : '';
 
     setPreviousDebugState(currentState);
     setDebugState(diagnostics.nextState);
@@ -271,12 +398,13 @@ export function App() {
     setDebugSnapshots(nextSnapshots);
     setTimelineCursor(nextSnapshots.length - 1);
     setSelectedInstructionIndex(diagnostics.nextState.registers.IP);
-    setDebugStatus(`${stepLabel}: ${diagnostics.traceEntry.instructionText}`);
+    setDebugStatus(`${stepLabel}: ${diagnostics.traceEntry.instructionText}${watchpointSuffix}`);
 
     return true;
   }, [
     debugProgram,
     debugState,
+    getTriggeredWatchpoint,
     traceLog,
     debugSnapshots,
     timelineCursor,
@@ -305,9 +433,148 @@ export function App() {
   }, [runDebugStep]);
 
   const debugStepOver = useCallback(() => {
-    // No CALL/RET yet, so step-over behaves like step-into for now.
-    void runDebugStep('Step Over');
-  }, [runDebugStep]);
+    const runStepOver = async () => {
+      if (isStepping || !debugProgram || debugState.halted || debugSnapshots.length === 0) {
+        return;
+      }
+
+      const safeTimelineIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+      const activeSnapshot = restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex]);
+      let currentState = activeSnapshot.state;
+      const currentIp = currentState.registers.IP;
+      const instruction = debugProgram.instructions[currentIp];
+
+      if (!instruction || instruction.opcode.toUpperCase() !== 'CALL') {
+        await runDebugStep('Step Over');
+        return;
+      }
+
+      setIsStepping(true);
+      try {
+        setDebugStatus('Step Over running...');
+        await animatePipeline(currentIp);
+
+        const returnAddress = currentIp + 1;
+        let previousState = safeTimelineIndex > 0
+          ? restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex - 1]).state
+          : null;
+        let currentOutput = [...activeSnapshot.output];
+        let currentTrace = traceLog.slice(0, activeSnapshot.traceLength);
+        let currentPerf = activeSnapshot.perf;
+        const currentSnapshots = debugSnapshots.slice(0, safeTimelineIndex + 1);
+        let lastMemoryChanges: number[] = [];
+        let steps = 0;
+        let callDepth = 0;
+        let watchpointStatus: string | null = null;
+
+        while (!currentState.halted && steps < MAX_DEBUG_STEPS) {
+          const ip = currentState.registers.IP;
+          if (ip < 0 || ip >= debugProgram.instructions.length) {
+            currentState = { ...currentState, halted: true, error: 'IP out of bounds' };
+            break;
+          }
+
+          if (steps > 0 && breakpoints.has(ip)) {
+            setDebugStatus(`Paused at breakpoint ${formatHex(ip)} during step-over.`);
+            break;
+          }
+
+          const currentInstruction = debugProgram.instructions[ip];
+          const diagnostics = executeStepWithDiagnostics({
+            state: currentState,
+            instruction: currentInstruction,
+            labels: debugProgram.labels,
+            stepNumber: currentTrace.length + 1,
+            stepStartedAtMs: performance.now(),
+          });
+          const changedSignalCount = diagnostics.changedRegisters.length
+            + diagnostics.changedFlags.length
+            + diagnostics.changedMemoryWords.length;
+          currentPerf = updatePerformanceMetrics(
+            currentPerf,
+            diagnostics.cycles,
+            changedSignalCount,
+            diagnostics.traceEntry.timestampMs
+          );
+          currentTrace.push(diagnostics.traceEntry);
+          if (diagnostics.output.length > 0) {
+            currentOutput = [...currentOutput, ...diagnostics.output];
+          }
+          previousState = currentState;
+          currentState = diagnostics.nextState;
+          lastMemoryChanges = diagnostics.changedMemoryWords;
+          currentSnapshots.push(createExecutionSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
+          steps++;
+
+          const opcode = currentInstruction.opcode.toUpperCase();
+          if (opcode === 'CALL') {
+            callDepth++;
+          } else if (opcode === 'RET') {
+            callDepth = Math.max(0, callDepth - 1);
+          }
+
+          const triggeredWatchpoint = getTriggeredWatchpoint(
+            diagnostics.memoryReads,
+            diagnostics.memoryWrites,
+            diagnostics.changedMemoryWords
+          );
+          if (triggeredWatchpoint) {
+            watchpointStatus = `Paused on watchpoint ${triggeredWatchpoint.label} during step-over.`;
+            break;
+          }
+
+          if (callDepth === 0 && currentState.registers.IP === returnAddress) {
+            break;
+          }
+        }
+
+        if (steps >= MAX_DEBUG_STEPS && !currentState.halted) {
+          currentState = { ...currentState, halted: true, error: 'Maximum steps exceeded (infinite loop?)' };
+        }
+
+        const lastSnapshotState = currentSnapshots[currentSnapshots.length - 1]?.state;
+        if (lastSnapshotState !== currentState) {
+          currentSnapshots.push(createExecutionSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
+        }
+
+        setPreviousDebugState(previousState);
+        setDebugState(currentState);
+        setDebugOutput(currentOutput);
+        setTraceLog(currentTrace);
+        setPerformanceMetrics(currentPerf);
+        setChangedMemoryWords(lastMemoryChanges);
+        setDebugSnapshots(currentSnapshots);
+        setTimelineCursor(currentSnapshots.length - 1);
+        setSelectedInstructionIndex(currentState.registers.IP);
+        setPipelineState((prev) => ({ ...prev, stage: 'idle', instructionIndex: currentState.registers.IP, tick: prev.tick + 1 }));
+
+        if (currentState.halted) {
+          setDebugStatus(currentState.error ? `Execution halted: ${currentState.error}` : 'Program halted during step-over.');
+        } else if (watchpointStatus) {
+          setDebugStatus(watchpointStatus);
+        } else if (breakpoints.has(currentState.registers.IP)) {
+          setDebugStatus(`Paused at breakpoint ${formatHex(currentState.registers.IP)} after step-over.`);
+        } else if (!breakpoints.has(currentState.registers.IP)) {
+          setDebugStatus(`Step Over completed ${steps} nested step(s).`);
+        }
+      } finally {
+        setIsStepping(false);
+      }
+    };
+
+    void runStepOver();
+  }, [
+    animatePipeline,
+    breakpoints,
+    debugProgram,
+    debugSnapshots,
+    debugState.halted,
+    getTriggeredWatchpoint,
+    isStepping,
+    runDebugStep,
+    timelineCursor,
+    traceLog,
+  ]);
 
   const debugStepBack = useCallback(() => {
     if (timelineCursor <= 0) {
@@ -333,6 +600,7 @@ export function App() {
     setSavedSnapshots([]);
     setSnapshotCompareAId(null);
     setSnapshotCompareBId(null);
+    setChallengeResultMessage(null);
     setDebugStatus('CPU state reset.');
   }, []);
 
@@ -352,6 +620,7 @@ export function App() {
     let currentPerf = activeSnapshot.perf;
     const currentSnapshots = debugSnapshots.slice(0, safeTimelineIndex + 1);
     let lastMemoryChanges: number[] = [];
+    let watchpointStatus: string | null = null;
     let steps = 0;
 
     while (!currentState.halted && steps < MAX_DEBUG_STEPS) {
@@ -397,6 +666,16 @@ export function App() {
       currentSnapshots.push(createExecutionSnapshot(currentState, currentOutput, currentTrace.length, currentPerf));
       steps++;
 
+      const triggeredWatchpoint = getTriggeredWatchpoint(
+        diagnostics.memoryReads,
+        diagnostics.memoryWrites,
+        diagnostics.changedMemoryWords
+      );
+      if (triggeredWatchpoint) {
+        watchpointStatus = `Paused on watchpoint ${triggeredWatchpoint.label} after ${steps} step(s).`;
+        break;
+      }
+
       if (breakpoints.has(currentState.registers.IP)) {
         setDebugStatus(`Paused at breakpoint ${formatHex(currentState.registers.IP)} after ${steps} step(s).`);
         break;
@@ -425,6 +704,8 @@ export function App() {
 
     if (currentState.halted) {
       setDebugStatus(currentState.error ? `Execution halted: ${currentState.error}` : `Program halted after ${steps} step(s).`);
+    } else if (watchpointStatus) {
+      setDebugStatus(watchpointStatus);
     } else if (!breakpoints.has(currentState.registers.IP)) {
       setDebugStatus(`Run completed ${steps} step(s).`);
     }
@@ -433,6 +714,7 @@ export function App() {
     debugProgram,
     debugSnapshots,
     debugState,
+    getTriggeredWatchpoint,
     isStepping,
     traceLog,
     timelineCursor,
@@ -546,13 +828,17 @@ export function App() {
   }, [selectedInstruction, selectedInstructionLastTrace]);
 
   const guidedLearningContent = useMemo<GuidedLearningContent>(() => {
-    return buildGuidedLearningContent(
+    const baseContent = buildGuidedLearningContent(
       selectedInstruction,
       inspectorData,
       timelineCursor,
       activeDemoId
     );
-  }, [activeDemoId, inspectorData, selectedInstruction, timelineCursor]);
+    return {
+      ...baseContent,
+      symbolicHints: buildSymbolicHints(selectedInstruction, debugState),
+    };
+  }, [activeDemoId, debugState, inspectorData, selectedInstruction, timelineCursor]);
 
   const snapshotComparison = useMemo<SnapshotComparison | null>(() => {
     if (!snapshotCompareAId || !snapshotCompareBId || snapshotCompareAId === snapshotCompareBId) {
@@ -565,6 +851,267 @@ export function App() {
     }
     return compareCPUStates(snapshotA.state, snapshotB.state);
   }, [savedSnapshots, snapshotCompareAId, snapshotCompareBId]);
+
+  const watchValues = useMemo<WatchValue[]>(() => {
+    return evaluateWatchExpressions(watchExpressions, debugState, previousDebugState);
+  }, [debugState, previousDebugState, watchExpressions]);
+
+  const branchPredictorStats = useMemo<BranchPredictorStats>(() => {
+    return analyzeBranchPrediction(visibleTrace, branchPredictorMode);
+  }, [branchPredictorMode, visibleTrace]);
+
+  const cacheStats = useMemo<CacheStats>(() => {
+    return simulateCache(visibleTrace, cacheConfig);
+  }, [cacheConfig, visibleTrace]);
+
+  const hazardStats = useMemo<HazardStats>(() => {
+    return analyzePipelineHazards(visibleTrace);
+  }, [visibleTrace]);
+
+  const sourceMapEntries = useMemo<SourceMapEntry[]>(() => {
+    if (!debugProgram) {
+      return [];
+    }
+    return buildSourceMapEntries(debugProgram);
+  }, [debugProgram]);
+
+  const debugSourceCodeForMap = useMemo(() => {
+    return debugOrigin === 'editor'
+      ? sourceCode
+      : (asmCode || DEFAULT_ASM);
+  }, [asmCode, debugOrigin, sourceCode]);
+
+  const activeSourceLine = useMemo<number | null>(() => {
+    return findSourceLineForInstruction(sourceMapEntries, selectedInstructionAddress);
+  }, [selectedInstructionAddress, sourceMapEntries]);
+
+  const runTestbench = useCallback((): AssertionResult[] => {
+    return runTestbenchAssertions(testbenchScript, debugState, debugOutput);
+  }, [debugOutput, debugState, testbenchScript]);
+
+  const selectSourceLine = useCallback((line: number) => {
+    const instructionAddress = findInstructionForSourceLine(sourceMapEntries, line);
+    if (instructionAddress === null) {
+      return;
+    }
+    setSelectedInstructionIndex(instructionAddress);
+    setDebugPanelTab('inspector');
+    setDebugStatus(`Mapped source line ${line} to instruction ${formatHex(instructionAddress)}.`);
+  }, [sourceMapEntries]);
+
+  const exportReplaySession = useCallback((): string => {
+    const traceForReplay = traceLog.slice(-MAX_TRACE_FOR_REPLAY);
+    const replayWindowLength = traceForReplay.length + 1;
+    const snapshotsForReplay = debugSnapshots.length > replayWindowLength
+      ? debugSnapshots.slice(debugSnapshots.length - replayWindowLength)
+      : debugSnapshots;
+    const session = createReplaySession({
+      trace: traceForReplay,
+      snapshots: snapshotsForReplay,
+      savedSnapshots,
+      breakpoints: Array.from(breakpoints).sort((a, b) => a - b),
+      sourceCode,
+      asmCode: asmCode || compilationResult?.assembly || '',
+    });
+    setLastReplaySession(session);
+    setDebugStatus(`Replay exported (${traceForReplay.length} steps).`);
+    return serializeReplaySession(session);
+  }, [asmCode, breakpoints, compilationResult?.assembly, debugSnapshots, savedSnapshots, sourceCode, traceLog]);
+
+  const importReplaySession = useCallback((json: string): string | null => {
+    try {
+      const session = parseReplaySession(json);
+      let restoredProgram: AssembledProgram | null = null;
+      let restoredOrigin: DebugOrigin = 'asm-editor';
+      let nextCompilationResult: CompilationResult | null = null;
+
+      if (session.asmCode.trim()) {
+        const assembled = assemble(session.asmCode);
+        const hardErrors = assembled.errors.filter((error) => error.type === 'error');
+        if (hardErrors.length === 0) {
+          restoredProgram = assembled;
+        }
+      }
+
+      if (!restoredProgram && session.sourceCode.trim()) {
+        const compiled = compile(session.sourceCode);
+        nextCompilationResult = compiled;
+        if (compiled.success && compiled.program) {
+          restoredProgram = compiled.program;
+          restoredOrigin = 'editor';
+        } else {
+          const errorMsg = compiled.errors.map((error) => `Line ${error.line}: ${error.message}`).join('; ');
+          return `Cannot rebuild replay program from source. ${errorMsg}`;
+        }
+      }
+
+      if (!restoredProgram) {
+        return 'Replay payload does not include a runnable source/assembly program.';
+      }
+
+      const importedSnapshots = session.snapshots.length > 0
+        ? session.snapshots
+        : [createExecutionSnapshot(createInitialState(), [], 0, createInitialPerformanceMetrics(), session.createdAtMs)];
+      const safeTimelineIndex = importedSnapshots.length - 1;
+      const restoredSnapshot = restoreExecutionSnapshot(importedSnapshots[safeTimelineIndex]);
+      const previousSnapshot = safeTimelineIndex > 0
+        ? restoreExecutionSnapshot(importedSnapshots[safeTimelineIndex - 1])
+        : null;
+      const restoredTrace = session.trace.slice(0, Math.min(session.trace.length, restoredSnapshot.traceLength));
+      const lastTraceEntry = restoredTrace[restoredTrace.length - 1];
+
+      setSourceCode(session.sourceCode || sourceCode);
+      setAsmCode(session.asmCode || asmCode);
+      if (nextCompilationResult) {
+        setCompilationResult(nextCompilationResult);
+      }
+      setDebugProgram(restoredProgram);
+      setDebugOrigin(restoredOrigin);
+      setActiveDemoId(session.asmCode ? resolveDemoIdFromSource(session.asmCode) : null);
+      setTraceLog(restoredTrace);
+      setDebugSnapshots(importedSnapshots);
+      setSavedSnapshots(session.savedSnapshots);
+      setBreakpoints(new Set(session.breakpoints));
+      setTimelineCursor(safeTimelineIndex);
+      setDebugState(restoredSnapshot.state);
+      setPreviousDebugState(previousSnapshot?.state ?? null);
+      setDebugOutput(restoredSnapshot.output);
+      setPerformanceMetrics(restoredSnapshot.perf);
+      setChangedMemoryWords(lastTraceEntry?.changedMemoryWords ?? []);
+      setSelectedInstructionIndex(restoredSnapshot.state.registers.IP);
+      setPipelineState((prev) => ({
+        ...prev,
+        stage: 'idle',
+        instructionIndex: restoredSnapshot.state.registers.IP,
+        tick: prev.tick + 1,
+      }));
+      setLastReplaySession(session);
+      setDebugPanelTab('tools');
+      setDebugStatus(`Replay imported (${session.trace.length} trace steps).`);
+      setViewMode('debug');
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Unknown replay import error';
+    }
+  }, [asmCode, sourceCode]);
+
+  const triggerSoftwareInterrupt = useCallback((vector: number) => {
+    if (!debugProgram || debugState.halted || isStepping || debugSnapshots.length === 0) {
+      return;
+    }
+
+    const safeTimelineIndex = Math.max(0, Math.min(timelineCursor, debugSnapshots.length - 1));
+    const activeSnapshot = restoreExecutionSnapshot(debugSnapshots[safeTimelineIndex]);
+    const branchSnapshots = debugSnapshots.slice(0, safeTimelineIndex + 1);
+    const branchTrace = traceLog.slice(0, activeSnapshot.traceLength);
+    const currentState = activeSnapshot.state;
+    const currentOutput = activeSnapshot.output;
+    const currentPerf = activeSnapshot.perf;
+
+    const instruction: Instruction = {
+      opcode: 'INT',
+      operands: [String(vector & 0xFF)],
+      address: currentState.registers.IP,
+      raw: `INT ${vector & 0xFF}`,
+    };
+    const diagnostics = executeStepWithDiagnostics({
+      state: currentState,
+      instruction,
+      labels: debugProgram.labels,
+      stepNumber: branchTrace.length + 1,
+      stepStartedAtMs: performance.now(),
+    });
+    const changedSignalCount = diagnostics.changedRegisters.length
+      + diagnostics.changedFlags.length
+      + diagnostics.changedMemoryWords.length;
+    const nextPerf = updatePerformanceMetrics(
+      currentPerf,
+      diagnostics.cycles,
+      changedSignalCount,
+      diagnostics.traceEntry.timestampMs
+    );
+    const nextTrace = [...branchTrace, diagnostics.traceEntry];
+    const nextOutput = diagnostics.output.length > 0
+      ? [...currentOutput, ...diagnostics.output]
+      : [...currentOutput];
+    const nextSnapshots = [
+      ...branchSnapshots,
+      createExecutionSnapshot(diagnostics.nextState, nextOutput, nextTrace.length, nextPerf),
+    ];
+    const triggeredWatchpoint = getTriggeredWatchpoint(
+      diagnostics.memoryReads,
+      diagnostics.memoryWrites,
+      diagnostics.changedMemoryWords
+    );
+    const watchpointSuffix = triggeredWatchpoint ? ` | Watchpoint hit: ${triggeredWatchpoint.label}` : '';
+
+    setPreviousDebugState(currentState);
+    setDebugState(diagnostics.nextState);
+    setDebugOutput(nextOutput);
+    setTraceLog(nextTrace);
+    setPerformanceMetrics(nextPerf);
+    setChangedMemoryWords(diagnostics.changedMemoryWords);
+    setDebugSnapshots(nextSnapshots);
+    setTimelineCursor(nextSnapshots.length - 1);
+    setSelectedInstructionIndex(diagnostics.nextState.registers.IP);
+    setDebugStatus(`Manual INT ${vector & 0xFF} triggered${watchpointSuffix}.`);
+  }, [
+    debugProgram,
+    debugSnapshots,
+    debugState.halted,
+    getTriggeredWatchpoint,
+    isStepping,
+    timelineCursor,
+    traceLog,
+  ]);
+
+  const loadSelectedChallenge = useCallback(() => {
+    if (!selectedChallengeId) {
+      setChallengeResultMessage('Select a challenge first.');
+      return;
+    }
+    const challenge = getChallengeById(selectedChallengeId);
+    if (!challenge) {
+      setChallengeResultMessage('Selected challenge could not be loaded.');
+      return;
+    }
+
+    setAsmCode(challenge.starter);
+    setActiveDemoId(null);
+    const program = assemble(challenge.starter);
+    const hardErrors = program.errors.filter((error) => error.type === 'error');
+    if (hardErrors.length > 0) {
+      setChallengeResultMessage(`Challenge starter has errors: ${hardErrors[0].message}`);
+      return;
+    }
+
+    initializeDebugSession(program, 'asm-editor', null);
+    setChallengeResultMessage(`Loaded challenge: ${challenge.title}`);
+  }, [initializeDebugSession, selectedChallengeId]);
+
+  const checkChallenge = useCallback(() => {
+    if (!selectedChallengeId) {
+      setChallengeResultMessage('Select a challenge first.');
+      return;
+    }
+    const challenge = getChallengeById(selectedChallengeId);
+    if (!challenge) {
+      setChallengeResultMessage('Selected challenge could not be found.');
+      return;
+    }
+
+    const candidateSource = asmCode.trim() ? asmCode : challenge.starter;
+    const program = assemble(candidateSource);
+    const hardErrors = program.errors.filter((error) => error.type === 'error');
+    if (hardErrors.length > 0) {
+      setChallengeResultMessage(`Assembly error: ${hardErrors[0].message}`);
+      return;
+    }
+
+    const { finalState, output } = runProgram(program);
+    const validationError = challenge.validator({ finalState, output, program });
+    setChallengeResultMessage(validationError ? `Not passed: ${validationError}` : `Passed: ${challenge.title}`);
+  }, [asmCode, selectedChallengeId]);
 
   const runAssemblySource = useCallback((source: string): string => {
     const program = assemble(source);
@@ -632,7 +1179,7 @@ export function App() {
   // Home View
   if (viewMode === 'home') {
     return (
-      <div className="min-h-screen bg-[#0b1110] bg-grid relative overflow-hidden">
+      <div className="app-shell min-h-screen bg-grid relative overflow-hidden">
         <div className="noise-overlay" />
         
         {/* Background Effects */}
@@ -742,7 +1289,7 @@ export function App() {
                     setSourceCode(code);
                     setViewMode('editor');
                   }}
-                  className="p-4 rounded-xl bg-[#13201e] border border-[#1f2b29] hover:border-[#45d1a3]/50 transition-all text-left"
+                  className="panel-glass p-4 rounded-xl border border-[#32486f]/55 hover:border-[#6edfd2]/50 transition-all text-left"
                 >
                   <FileCode className="w-5 h-5 text-[#45d1a3] mb-2" />
                   <span className="text-sm font-medium text-white capitalize">{name}</span>
@@ -758,15 +1305,15 @@ export function App() {
   // Editor View
   if (viewMode === 'editor') {
     return (
-      <div className="min-h-screen bg-[#0b1110] flex flex-col">
+      <div className="app-shell min-h-screen flex flex-col">
         {/* Top Bar */}
-        <div className="h-14 border-b border-[#1f2b29] bg-[#0f1716] flex items-center justify-between px-4">
+        <div className="topbar-glass h-14 flex items-center justify-between px-4">
           <div className="flex items-center gap-4">
             <Button variant="ghost" size="sm" onClick={() => setViewMode('home')}>
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back
             </Button>
-            <div className="h-6 w-px bg-[#1f2b29]" />
+            <div className="h-6 w-px bg-[#31486d]" />
             <div className="flex items-center gap-2">
               <Cpu className="w-5 h-5 text-[#45d1a3]" />
               <span className="font-semibold text-white">High-Level Editor</span>
@@ -858,7 +1405,7 @@ export function App() {
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
-                    className="h-full bg-[#0d1513] rounded-lg border border-[#1f2b29] p-4 font-mono text-sm"
+                    className="h-full panel-glass rounded-2xl border border-[#2a3d61]/60 p-4 font-mono text-sm"
                   >
                     {runOutput ? (
                       <pre className={cn('whitespace-pre-wrap', outputIsError ? 'text-[#f38b8b]' : 'text-[#5de6a0]')}>
@@ -874,7 +1421,7 @@ export function App() {
           </div>
 
           {/* Side Panel */}
-          <div className="w-80 border-l border-[#1f2b29] bg-[#0f1716] p-4 overflow-y-auto">
+          <div className="side-panel-modern w-80 p-4 overflow-y-auto">
             {/* Compilation Status */}
             {compilationResult && (
               <Card className="mb-4">
@@ -978,15 +1525,15 @@ print "Hello!"`}</pre>
     };
 
     return (
-      <div className="min-h-screen bg-[#0b1110] flex flex-col">
+      <div className="app-shell min-h-screen flex flex-col">
         {/* Top Bar */}
-        <div className="h-14 border-b border-[#1f2b29] bg-[#0f1716] flex items-center justify-between px-4">
+        <div className="topbar-glass h-14 flex items-center justify-between px-4">
           <div className="flex items-center gap-4">
             <Button variant="ghost" size="sm" onClick={() => setViewMode('home')}>
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back
             </Button>
-            <div className="h-6 w-px bg-[#1f2b29]" />
+            <div className="h-6 w-px bg-[#31486d]" />
             <div className="flex items-center gap-2">
               <Code2 className="w-5 h-5 text-[#e0b56a]" />
               <span className="font-semibold text-white">Assembly Editor</span>
@@ -1027,7 +1574,7 @@ print "Hello!"`}</pre>
             />
           </div>
           
-          <div className="w-80 border-l border-[#1f2b29] bg-[#0f1716] p-4 overflow-y-auto">
+          <div className="side-panel-modern w-80 p-4 overflow-y-auto">
             <Card className="mb-4">
               <CardHeader title="Output" icon={<Terminal className="w-4 h-4" />} />
               <CardContent>
@@ -1065,7 +1612,11 @@ print "Hello!"`}</pre>
                   <div className="text-gray-500 mt-2">Compare & Jump:</div>
                   <div className="text-[#7ab6ff]">CMP, JMP, JE/JZ, JNE/JNZ, JL/JG, JLE/JGE, JC/JNC, JS/JNS, JO/JNO</div>
                   <div className="text-gray-500 mt-2">Control:</div>
-                  <div className="text-[#7ab6ff]">HLT, NOP, OUT, OUTC, CLC, STC, CMC</div>
+                  <div className="text-[#7ab6ff]">CALL, RET, INT, IRET, HLT, NOP</div>
+                  <div className="text-gray-500 mt-2">I/O:</div>
+                  <div className="text-[#7ab6ff]">OUT, OUTC, IN, OUTP</div>
+                  <div className="text-gray-500 mt-2">Flags:</div>
+                  <div className="text-[#7ab6ff]">CLC, STC, CMC</div>
                 </div>
               </CardContent>
             </Card>
@@ -1089,15 +1640,15 @@ print "Hello!"`}</pre>
     const canStep = !debugState.halted && !isStepping;
     
     return (
-      <div className="min-h-screen bg-[#0b1110] flex flex-col">
+      <div className="app-shell min-h-screen flex flex-col">
         {/* Top Bar */}
-        <div className="h-14 border-b border-[#1f2b29] bg-[#0f1716] flex items-center justify-between px-4">
+        <div className="topbar-glass h-14 flex items-center justify-between px-4">
           <div className="flex items-center gap-4">
             <Button variant="ghost" size="sm" onClick={() => setViewMode(debugOrigin)}>
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back
             </Button>
-            <div className="h-6 w-px bg-[#1f2b29]" />
+            <div className="h-6 w-px bg-[#31486d]" />
             <div className="flex items-center gap-2">
               <Bug className="w-5 h-5 text-[#f0b45b]" />
               <span className="font-semibold text-white">Debugger</span>
@@ -1173,6 +1724,11 @@ print "Hello!"`}</pre>
                   <div className="text-xs text-[#7adfb1] uppercase tracking-wider mb-1">Step Explanation Overlay</div>
                   <div className="text-sm text-white mb-1">{guidedLearningContent.title}</div>
                   <div className="text-xs text-gray-300">{guidedLearningContent.explanation}</div>
+                  {guidedLearningContent.symbolicHints && guidedLearningContent.symbolicHints.length > 0 && (
+                    <div className="text-[11px] text-[#e0b56a] mt-2">
+                      Symbolic hint: {guidedLearningContent.symbolicHints[0]}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             )}
@@ -1239,7 +1795,7 @@ print "Hello!"`}</pre>
           </div>
 
           {/* Side Panel */}
-          <div className="w-96 border-l border-[#1f2b29] bg-[#0f1716] p-4 overflow-y-auto space-y-4">
+          <div className="side-panel-modern w-96 p-4 overflow-y-auto space-y-4">
             <Tabs
               tabs={[
                 { id: 'observe', label: 'Observe', icon: <Cpu className="w-4 h-4" /> },
@@ -1247,6 +1803,7 @@ print "Hello!"`}</pre>
                 { id: 'snapshots', label: 'Snapshots', icon: <Camera className="w-4 h-4" /> },
                 { id: 'analytics', label: 'Analytics', icon: <ChartColumn className="w-4 h-4" /> },
                 { id: 'learn', label: 'Learn', icon: <GraduationCap className="w-4 h-4" /> },
+                { id: 'tools', label: 'Tools', icon: <MonitorCog className="w-4 h-4" /> },
               ]}
               activeTab={debugPanelTab}
               onTabChange={(tab) => setDebugPanelTab(tab as DebugPanelTab)}
@@ -1427,6 +1984,134 @@ print "Hello!"`}</pre>
               </Card>
             )}
 
+            {debugPanelTab === 'tools' && (
+              <>
+                <Card>
+                  <CardHeader title="Watch Expressions" icon={<MonitorCog className="w-4 h-4" />} />
+                  <CardContent>
+                    <WatchPanel
+                      watchValues={watchValues}
+                      onAddWatch={addWatchExpression}
+                      onRemoveWatch={removeWatchExpression}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Memory Watchpoints" icon={<Bug className="w-4 h-4" />} />
+                  <CardContent>
+                    <WatchpointPanel
+                      watchpoints={watchpoints}
+                      onAddWatchpoint={addWatchpoint}
+                      onRemoveWatchpoint={removeWatchpoint}
+                      onToggleWatchpoint={toggleWatchpoint}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Branch Predictor Lab" icon={<Zap className="w-4 h-4" />} />
+                  <CardContent>
+                    <BranchPredictorPanel
+                      mode={branchPredictorMode}
+                      stats={branchPredictorStats}
+                      onModeChange={setBranchPredictorMode}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Cache Simulator" icon={<Layers className="w-4 h-4" />} />
+                  <CardContent>
+                    <CacheSimulatorPanel
+                      config={cacheConfig}
+                      stats={cacheStats}
+                      onConfigChange={setCacheConfig}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Pipeline Hazards" icon={<SlidersHorizontal className="w-4 h-4" />} />
+                  <CardContent>
+                    <HazardPanel stats={hazardStats} />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Source Runtime Map" icon={<Link2 className="w-4 h-4" />} />
+                  <CardContent>
+                    <SourceRuntimeMapPanel
+                      sourceCode={debugSourceCodeForMap}
+                      sourceMap={sourceMapEntries}
+                      activeSourceLine={activeSourceLine}
+                      onSelectSourceLine={selectSourceLine}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Replay Session" icon={<RotateCcw className="w-4 h-4" />} />
+                  <CardContent>
+                    <ReplayPanel
+                      onExport={exportReplaySession}
+                      onImport={importReplaySession}
+                    />
+                    {lastReplaySession && (
+                      <div className="mt-2 text-[11px] text-gray-500">
+                        Last export/import: {new Date(lastReplaySession.createdAtMs).toLocaleString()}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Challenge Mode" icon={<FlaskConical className="w-4 h-4" />} />
+                  <CardContent>
+                    <ChallengePanel
+                      challenges={CHALLENGES}
+                      selectedChallengeId={selectedChallengeId}
+                      onSelectChallenge={setSelectedChallengeId}
+                      onLoadChallenge={loadSelectedChallenge}
+                      onCheckChallenge={checkChallenge}
+                      resultMessage={challengeResultMessage}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="CPU Testbench" icon={<Check className="w-4 h-4" />} />
+                  <CardContent>
+                    <TestbenchPanel
+                      script={testbenchScript}
+                      onScriptChange={setTestbenchScript}
+                      onRun={runTestbench}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Call Stack View" icon={<Terminal className="w-4 h-4" />} />
+                  <CardContent>
+                    <StackFramePanel
+                      state={debugState}
+                      programLength={debugProgram.instructions.length}
+                    />
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader title="Interrupt + I/O Console" icon={<MonitorCog className="w-4 h-4" />} />
+                  <CardContent>
+                    <InterruptIOPanel
+                      state={debugState}
+                      onTriggerInterrupt={triggerSoftwareInterrupt}
+                    />
+                  </CardContent>
+                </Card>
+              </>
+            )}
+
             {debugState.error && (
               <Card className="border-[#e05d5d]/40">
                 <CardContent>
@@ -1501,7 +2186,7 @@ function MemoryView({
               ? 'border-[#f0b45b]/60 bg-[#f0b45b]/10 text-[#f0b45b]'
               : row.changed
                 ? 'border-[#45d1a3]/60 bg-[#45d1a3]/10 text-[#7adfb1]'
-              : 'border-[#1f2b29] bg-[#0f1716] text-gray-400'
+              : 'border-[#30496d]/55 bg-[rgba(12,20,33,0.82)] text-[#96abc9]'
           )}
         >
           <span>{formatHex(row.addr)}</span>
@@ -1523,13 +2208,13 @@ function FeatureCard({ icon, title, description }: { icon: React.ReactNode; titl
   return (
     <motion.div
       whileHover={{ y: -5 }}
-      className="p-6 rounded-2xl bg-[#13201e] border border-[#1f2b29] hover:border-[#45d1a3]/30 transition-all"
+      className="panel-glass p-6 rounded-2xl border border-[#2f476f]/60 hover:border-[#6adfd1]/45 transition-all shadow-[0_20px_45px_rgba(5,10,22,0.3)]"
     >
-      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-[#45d1a3]/20 to-[#e0b56a]/20 flex items-center justify-center text-[#45d1a3] mb-4">
+      <div className="w-12 h-12 rounded-xl border border-[#3d5a8b]/45 bg-gradient-to-br from-[#4ed8c9]/25 via-[#75b2ff]/15 to-[#f4b65f]/20 flex items-center justify-center text-[#6de0d3] mb-4">
         {icon}
       </div>
       <h3 className="text-lg font-semibold text-white mb-2">{title}</h3>
-      <p className="text-gray-400 text-sm">{description}</p>
+      <p className="text-[#9db1d1] text-sm">{description}</p>
     </motion.div>
   );
 }

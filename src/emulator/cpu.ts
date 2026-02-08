@@ -3,6 +3,8 @@ import { CPUState, Registers, Flags, Instruction, AssembledProgram } from '../ty
 
 const MEMORY_SIZE = 4096;
 const STACK_START = 4094; // Top of stack
+const IO_PORT_BASE = 0x0300;
+const IO_PORT_COUNT = 128;
 
 export function createInitialState(): CPUState {
   return {
@@ -220,6 +222,62 @@ function writeWord(state: CPUState, address: number, value: number): void {
   const val = mask16(value);
   state.memory[address] = val & 0xFF;
   state.memory[address + 1] = (val >> 8) & 0xFF;
+}
+
+function resolveJumpTarget(
+  targetOperand: string,
+  labels: Map<string, number>,
+  _state: CPUState
+): number {
+  const normalized = targetOperand.trim().toUpperCase();
+  const labelAddress = labels.get(normalized);
+  if (labelAddress !== undefined) {
+    return labelAddress;
+  }
+
+  const immediate = parseImmediate(targetOperand);
+  if (immediate !== null) {
+    return immediate;
+  }
+
+  throw new Error(`Unknown jump/call target: ${targetOperand}`);
+}
+
+function resolveInterruptTarget(
+  vectorOperand: string,
+  labels: Map<string, number>,
+  state: CPUState
+): number {
+  const immediate = parseImmediate(vectorOperand);
+  if (immediate === null) {
+    return resolveJumpTarget(vectorOperand, labels, state);
+  }
+
+  const vector = immediate & 0xFF;
+  const vectorLabelCandidates = [
+    `ISR_${vector}`,
+    `INT_${vector}`,
+    `ISR${vector}`,
+    `INT${vector}`,
+  ];
+  for (const candidate of vectorLabelCandidates) {
+    const target = labels.get(candidate);
+    if (target !== undefined) {
+      return target;
+    }
+  }
+
+  const tableAddress = vector * 2;
+  const mappedAddress = readWord(state, tableAddress);
+  return mappedAddress;
+}
+
+function getPortAddress(portValue: number): number {
+  const port = portValue & 0xFF;
+  if (port >= IO_PORT_COUNT) {
+    throw new Error(`Invalid I/O port: ${port}`);
+  }
+  return IO_PORT_BASE + port * 2;
 }
 
 function resolveValue(state: CPUState, operand: string): number {
@@ -614,6 +672,9 @@ export function executeInstruction(
         if (!destReg && destMem === null) throw new Error(`Invalid destination: ${operands[0]}`);
 
         const sp = newState.registers.SP;
+        if (sp < 0 || sp + 1 >= newState.memory.length) {
+          throw new Error('Stack underflow');
+        }
         const val = readWord(newState, sp);
         if (destReg) {
           newState.registers[destReg] = val;
@@ -624,17 +685,84 @@ export function executeInstruction(
         newState.registers.IP++;
         break;
       }
+
+      case 'CALL': {
+        const target = resolveJumpTarget(operands[0], labels, newState);
+        const nextSp = newState.registers.SP - 2;
+        if (nextSp < 0) throw new Error('Stack overflow');
+        writeWord(newState, nextSp, newState.registers.IP + 1);
+        newState.registers.SP = nextSp;
+        newState.registers.IP = target;
+        break;
+      }
+
+      case 'RET': {
+        const sp = newState.registers.SP;
+        if (sp < 0 || sp + 1 >= newState.memory.length) {
+          throw new Error('Stack underflow');
+        }
+        const returnAddress = readWord(newState, sp);
+        newState.registers.SP = sp + 2;
+        newState.registers.IP = returnAddress;
+        break;
+      }
+
+      case 'INT': {
+        if (operands.length < 1) {
+          throw new Error('INT requires vector operand');
+        }
+
+        const target = resolveInterruptTarget(operands[0], labels, newState);
+
+        const pushSp1 = newState.registers.SP - 2;
+        const pushSp2 = pushSp1 - 2;
+        if (pushSp2 < 0) throw new Error('Stack overflow during INT');
+
+        // Save FLAGS then return IP for IRET.
+        writeWord(newState, pushSp1, newState.registers.FLAGS);
+        writeWord(newState, pushSp2, newState.registers.IP + 1);
+        newState.registers.SP = pushSp2;
+        newState.registers.IP = target;
+        break;
+      }
+
+      case 'IRET': {
+        const sp = newState.registers.SP;
+        if (sp < 0 || sp + 3 >= newState.memory.length) {
+          throw new Error('Stack underflow during IRET');
+        }
+        const returnIp = readWord(newState, sp);
+        const restoredFlags = readWord(newState, sp + 2);
+        newState.registers.SP = sp + 4;
+        newState.registers.IP = returnIp;
+        newState.registers.FLAGS = restoredFlags;
+        break;
+      }
+
+      case 'IN': {
+        const dest = parseRegister(operands[0]);
+        if (!dest) throw new Error(`Invalid destination register: ${operands[0]}`);
+        const portValue = parseImmediate(operands[1]);
+        if (portValue === null) throw new Error(`Invalid input port: ${operands[1]}`);
+        const portAddress = getPortAddress(portValue);
+        newState.registers[dest] = readWord(newState, portAddress);
+        newState.registers.IP++;
+        break;
+      }
+
+      case 'OUTP': {
+        const portValue = parseImmediate(operands[0]);
+        if (portValue === null) throw new Error(`Invalid output port: ${operands[0]}`);
+        const src = parseRegister(operands[1]);
+        if (!src) throw new Error(`Invalid source register: ${operands[1]}`);
+        const portAddress = getPortAddress(portValue);
+        writeWord(newState, portAddress, newState.registers[src]);
+        newState.registers.IP++;
+        break;
+      }
       
       case 'JMP': {
-        const label = operands[0].trim().toUpperCase();
-        const addr = labels.get(label);
-        if (addr === undefined) {
-          const imm = parseImmediate(label);
-          if (imm === null) throw new Error(`Unknown label: ${label}`);
-          newState.registers.IP = imm;
-        } else {
-          newState.registers.IP = addr;
-        }
+        newState.registers.IP = resolveJumpTarget(operands[0], labels, newState);
         break;
       }
       

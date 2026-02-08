@@ -23,27 +23,28 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(({
   ...props
 }, ref) => {
   const variants = {
-    primary: 'bg-gradient-to-r from-[#45d1a3] to-[#e0b56a] hover:from-[#3fc497] hover:to-[#d5a65a] text-[#0b1110] shadow-lg shadow-[#45d1a3]/25',
-    secondary: 'bg-[#14221f] hover:bg-[#1b2b27] text-white border border-[#2b3b37]',
-    ghost: 'bg-transparent hover:bg-white/5 text-gray-300',
-    danger: 'bg-[#e05d5d]/10 hover:bg-[#e05d5d]/20 text-[#f38b8b] border border-[#e05d5d]/30',
-    success: 'bg-[#2fbf71]/10 hover:bg-[#2fbf71]/20 text-[#5de6a0] border border-[#2fbf71]/30',
+    primary: 'bg-gradient-to-r from-[#4ed8c9] via-[#74b2ff] to-[#f4b65f] text-[#08101b] shadow-[0_10px_28px_rgba(78,216,201,0.3)] border border-white/20',
+    secondary: 'bg-[linear-gradient(160deg,rgba(22,35,57,0.95),rgba(17,28,45,0.85))] text-[#e4ecff] border border-[#365079]/70 hover:border-[#4f74ad]',
+    ghost: 'bg-transparent hover:bg-[#ffffff0e] text-[#b9c9e5] border border-transparent hover:border-[#334c74]',
+    danger: 'bg-[linear-gradient(160deg,rgba(121,42,42,0.42),rgba(81,27,27,0.34))] text-[#ffb3b3] border border-[#bf6969]/45',
+    success: 'bg-[linear-gradient(160deg,rgba(24,74,53,0.55),rgba(23,57,47,0.35))] text-[#8ce6bf] border border-[#4bcf89]/40',
   };
 
   const sizes = {
-    sm: 'px-3 py-1.5 text-xs gap-1.5',
-    md: 'px-4 py-2 text-sm gap-2',
-    lg: 'px-6 py-3 text-base gap-2.5',
+    sm: 'px-3 py-1.5 text-xs',
+    md: 'px-4 py-2 text-sm',
+    lg: 'px-6 py-3 text-base',
   };
+  const iconGap = size === 'sm' ? 'gap-1.5' : size === 'lg' ? 'gap-2.5' : 'gap-2';
 
   return (
     <motion.button
       ref={ref}
-      whileHover={{ scale: disabled ? 1 : 1.02 }}
+      whileHover={{ scale: disabled ? 1 : 1.02, y: disabled ? 0 : -1 }}
       whileTap={{ scale: disabled ? 1 : 0.98 }}
       className={cn(
-        'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-200',
-        'focus:outline-none focus:ring-2 focus:ring-[#45d1a3]/50 focus:ring-offset-2 focus:ring-offset-[#0b1110]',
+        'btn-modern inline-flex items-center justify-center font-medium rounded-xl transition-all duration-200',
+        'focus:outline-none focus:ring-2 focus:ring-[#4ed8c9]/45 focus:ring-offset-2 focus:ring-offset-[#0a1220]',
         'disabled:opacity-50 disabled:cursor-not-allowed',
         variants[variant],
         sizes[size],
@@ -52,17 +53,18 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(({
       disabled={disabled || loading}
       {...props}
     >
+      <span className="btn-shine" />
       {loading ? (
-        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+        <svg className="relative z-10 animate-spin h-4 w-4" viewBox="0 0 24 24">
           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
       ) : (
-        <>
+        <span className={cn('relative z-10 inline-flex items-center', iconGap)}>
           {icon && iconPosition === 'left' && icon}
           {children}
           {icon && iconPosition === 'right' && icon}
-        </>
+        </span>
       )}
     </motion.button>
   );

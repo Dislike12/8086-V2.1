@@ -16,22 +16,24 @@ interface TabsProps {
 
 export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
   return (
-    <div className={cn('flex items-center gap-1 p-1 bg-[#0f1716] rounded-lg', className)}>
+    <div className={cn('tabs-shell flex items-center gap-1 p-1.5 rounded-xl', className)}>
       {tabs.map((tab) => (
-        <button
+        <motion.button
           key={tab.id}
+          whileHover={{ y: -1 }}
+          whileTap={{ scale: 0.98 }}
           onClick={() => onTabChange(tab.id)}
           className={cn(
-            'relative flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors',
+            'relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
             activeTab === tab.id
               ? 'text-white'
-              : 'text-gray-400 hover:text-gray-300'
+              : 'text-[#9bb0d3] hover:text-[#d9e3fb]'
           )}
         >
           {activeTab === tab.id && (
             <motion.div
               layoutId="activeTab"
-              className="absolute inset-0 bg-[#1b2b27] rounded-md"
+              className="absolute inset-0 rounded-lg bg-[linear-gradient(140deg,rgba(78,216,201,0.24),rgba(94,155,255,0.2),rgba(244,182,95,0.2))] border border-[#6f99d8]/40 shadow-[0_0_20px_rgba(94,155,255,0.2)]"
               transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
             />
           )}
@@ -39,7 +41,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
             {tab.icon}
             {tab.label}
           </span>
-        </button>
+        </motion.button>
       ))}
     </div>
   );

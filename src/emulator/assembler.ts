@@ -9,6 +9,8 @@ const VALID_OPCODES = [
   'JC', 'JNC', 'JB', 'JNB', 'JAE', 'JNAE',
   'JS', 'JNS', 'JO', 'JNO',
   'INC', 'DEC', 'PUSH', 'POP',
+  'CALL', 'RET', 'INT', 'IRET',
+  'IN', 'OUTP',
   'HLT', 'NOP', 'OUT', 'OUTC',
   'CLC', 'STC', 'CMC'
 ];
@@ -222,6 +224,52 @@ function validateInstruction(opcode: string, operands: string[], line: number): 
       }
       if (!isValidRegister(operands[0]) && !isValidMemoryOperand(operands[0])) {
         return { line, message: `Invalid operand: ${operands[0]}`, type: 'error' };
+      }
+      break;
+
+    case 'CALL':
+      if (operands.length !== 1) {
+        return { line, message: `${opcode} requires 1 operand (label/address)`, type: 'error' };
+      }
+      break;
+
+    case 'RET':
+    case 'IRET':
+      if (operands.length !== 0) {
+        return { line, message: `${opcode} takes no operands`, type: 'error' };
+      }
+      break;
+
+    case 'INT':
+      if (operands.length !== 1) {
+        return { line, message: `${opcode} requires interrupt vector operand`, type: 'error' };
+      }
+      if (!isValidImmediate(operands[0]) && !/^\w+$/.test(operands[0])) {
+        return { line, message: `Invalid interrupt vector: ${operands[0]}`, type: 'error' };
+      }
+      break;
+
+    case 'IN':
+      if (operands.length !== 2) {
+        return { line, message: `${opcode} requires 2 operands`, type: 'error' };
+      }
+      if (!isValidRegister(operands[0])) {
+        return { line, message: `Invalid destination register: ${operands[0]}`, type: 'error' };
+      }
+      if (!isValidImmediate(operands[1])) {
+        return { line, message: `Invalid input port: ${operands[1]}`, type: 'error' };
+      }
+      break;
+
+    case 'OUTP':
+      if (operands.length !== 2) {
+        return { line, message: `${opcode} requires 2 operands`, type: 'error' };
+      }
+      if (!isValidImmediate(operands[0])) {
+        return { line, message: `Invalid output port: ${operands[0]}`, type: 'error' };
+      }
+      if (!isValidRegister(operands[1])) {
+        return { line, message: `Invalid source register: ${operands[1]}`, type: 'error' };
       }
       break;
       

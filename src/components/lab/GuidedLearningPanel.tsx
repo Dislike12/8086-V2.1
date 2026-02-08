@@ -45,6 +45,18 @@ export function GuidedLearningPanel({
               ))}
             </div>
           </div>
+          {content.symbolicHints && content.symbolicHints.length > 0 && (
+            <div>
+              <div className="text-[11px] text-gray-500 uppercase tracking-wider mb-1">Symbolic Hints</div>
+              <div className="space-y-1">
+                {content.symbolicHints.map((hint, index) => (
+                  <div key={`${hint}-${index}`} className="text-xs text-[#e0b56a]">
+                    {hint}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {content.tutorialCheckpoint && (
             <div className="text-xs text-[#e0b56a] border border-[#e0b56a]/25 bg-[#e0b56a]/10 rounded px-2 py-1">
               {content.tutorialCheckpoint}

@@ -27,6 +27,8 @@ export interface TraceEntry {
   changedRegisters: (keyof Registers)[];
   changedFlags: Array<'CF' | 'PF' | 'AF' | 'ZF' | 'SF' | 'OF'>;
   changedMemoryWords: number[];
+  memoryReads: number[];
+  memoryWrites: number[];
   output: ProgramOutput[];
   cycles: number;
   timestampMs: number;
@@ -38,6 +40,8 @@ export interface StepDiagnostics {
   changedRegisters: (keyof Registers)[];
   changedFlags: Array<'CF' | 'PF' | 'AF' | 'ZF' | 'SF' | 'OF'>;
   changedMemoryWords: number[];
+  memoryReads: number[];
+  memoryWrites: number[];
   cycles: number;
   traceEntry: TraceEntry;
 }
@@ -127,6 +131,92 @@ export interface GuidedLearningContent {
   explanation: string;
   hints: string[];
   tutorialCheckpoint?: string;
+  symbolicHints?: string[];
+}
+
+export interface WatchExpression {
+  id: string;
+  expression: string;
+}
+
+export interface WatchValue {
+  id: string;
+  expression: string;
+  ok: boolean;
+  value: number | null;
+  hexValue: string;
+  changed: boolean;
+  error?: string;
+}
+
+export type WatchpointType = 'read' | 'write' | 'change';
+
+export interface MemoryWatchpoint {
+  id: string;
+  label: string;
+  address: number;
+  size: number;
+  type: WatchpointType;
+  enabled: boolean;
+}
+
+export type BranchPredictorMode = 'always_taken' | 'always_not_taken' | 'one_bit' | 'two_bit';
+
+export interface BranchPredictorStats {
+  mode: BranchPredictorMode;
+  evaluatedBranches: number;
+  correctPredictions: number;
+  incorrectPredictions: number;
+  accuracy: number;
+  byOpcode: Array<{
+    opcode: string;
+    total: number;
+    correct: number;
+    accuracy: number;
+  }>;
+}
+
+export type CachePolicy = 'direct_mapped' | 'set_associative_2way';
+
+export interface CacheConfig {
+  policy: CachePolicy;
+  lineCount: number;
+  lineSizeBytes: number;
+}
+
+export interface CacheStats {
+  accesses: number;
+  hits: number;
+  misses: number;
+  hitRate: number;
+  missesByType: {
+    read: number;
+    write: number;
+  };
+}
+
+export interface HazardStats {
+  dataHazards: number;
+  controlHazards: number;
+  structuralHazards: number;
+  simulatedStalls: number;
+}
+
+export interface SourceMapEntry {
+  sourceLine: number;
+  instructionStart: number;
+  instructionEnd: number;
+}
+
+export interface ReplaySession {
+  version: string;
+  createdAtMs: number;
+  trace: TraceEntry[];
+  snapshots: ExecutionSnapshot[];
+  savedSnapshots: SavedSnapshot[];
+  breakpoints: number[];
+  sourceCode: string;
+  asmCode: string;
 }
 
 export interface ExecuteStepParams {

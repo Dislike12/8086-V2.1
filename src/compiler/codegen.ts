@@ -100,6 +100,7 @@ function generateNode(node: ASTNode, ctx: CodeGenContext): void {
       break;
 
     case 'VarDecl':
+      emitSourceMarker(node, ctx);
       // Variable declaration with optional initialization
       if (node.children && node.children.length > 0) {
         generateExpression(node.children[0], ctx, 'AX');
@@ -111,6 +112,7 @@ function generateNode(node: ASTNode, ctx: CodeGenContext): void {
       break;
 
     case 'Assignment':
+      emitSourceMarker(node, ctx);
       if (node.children && node.children.length > 0) {
         const varName = node.value as string;
         generateExpression(node.children[0], ctx, 'AX');
@@ -121,18 +123,22 @@ function generateNode(node: ASTNode, ctx: CodeGenContext): void {
       break;
 
     case 'If':
+      emitSourceMarker(node, ctx);
       generateIf(node, ctx);
       break;
 
     case 'While':
+      emitSourceMarker(node, ctx);
       generateWhile(node, ctx);
       break;
 
     case 'For':
+      emitSourceMarker(node, ctx);
       generateFor(node, ctx);
       break;
 
     case 'Print':
+      emitSourceMarker(node, ctx);
       if (node.children && node.children.length > 0) {
         const child = node.children[0];
         if (child.type === 'String') {
@@ -151,6 +157,7 @@ function generateNode(node: ASTNode, ctx: CodeGenContext): void {
       break;
 
     case 'Input':
+      emitSourceMarker(node, ctx);
       // Input not fully implemented in virtual CPU
       ctx.output.push(`    ; Input ${node.value} (simulated)`);
       break;
@@ -162,6 +169,14 @@ function generateNode(node: ASTNode, ctx: CodeGenContext): void {
         type: 'error'
       });
   }
+}
+
+function emitSourceMarker(node: ASTNode, ctx: CodeGenContext): void {
+  if (node.line <= 0) {
+    return;
+  }
+  // Embedded mapping label for source <-> assembly/runtime navigation.
+  ctx.output.push(`_SRC_${node.line}_${ctx.labelCounter++}:`);
 }
 
 function generateIf(node: ASTNode, ctx: CodeGenContext): void {
