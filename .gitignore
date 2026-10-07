@@ -1,10 +1,8 @@
-<<<<<<< HEAD
 node_modules/
 dist/
 coverage/
 .env
 .DS_Store
-=======
 # Logs
 logs
 *.log
@@ -144,4 +142,3 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
->>>>>>> 55bf7c2a85bcd31f68417807836caf41f2edafe9
