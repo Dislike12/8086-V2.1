@@ -87,7 +87,7 @@ export function runTestbenchAssertions(
       continue;
     }
 
-    if (kind === 'HALTED' && tokens.length >= 2) {
+    if (kind === 'HALTED' && tokens.length === 2 && /^(true|false)$/i.test(tokens[1])) {
       const expected = tokens[1].toLowerCase() === 'true';
       const passed = finalState.halted === expected;
       results.push({
@@ -99,6 +99,7 @@ export function runTestbenchAssertions(
       continue;
     }
 
+    // Invalid HALTED values and extra tokens fall through as unsupported syntax.
     results.push({
       line: lineNo,
       expression: raw,
