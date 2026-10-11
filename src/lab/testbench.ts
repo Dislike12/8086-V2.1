@@ -38,7 +38,7 @@ export function runTestbenchAssertions(
     const tokens = raw.split(/\s+/);
     const kind = tokens[0]?.toUpperCase();
 
-    if (kind === 'REG' && tokens.length >= 4 && tokens[2] === '=') {
+    if (kind === 'REG' && tokens.length === 4 && tokens[2] === '=') {
       const reg = tokens[1].toUpperCase();
       const expected = parseHexOrDec(tokens[3]);
       const actual = (finalState.registers as unknown as Record<string, number>)[reg];
@@ -52,7 +52,7 @@ export function runTestbenchAssertions(
       continue;
     }
 
-    if (kind === 'MEM' && tokens.length >= 4 && tokens[2] === '=') {
+    if (kind === 'MEM' && tokens.length === 4 && tokens[2] === '=') {
       const addrToken = tokens[1].replace(/^\[|\]$/g, '');
       const address = parseHexOrDec(addrToken);
       const expected = parseHexOrDec(tokens[3]);
@@ -74,7 +74,7 @@ export function runTestbenchAssertions(
       continue;
     }
 
-    if (kind === 'OUT' && tokens.length >= 2) {
+    if (kind === 'OUT' && tokens.length === 2) {
       const expected = parseHexOrDec(tokens[1]);
       const outputs = output.filter((item) => item.type === 'number').map((item) => item.value & 0xFFFF);
       const passed = expected !== null && outputs.includes(expected & 0xFFFF);
