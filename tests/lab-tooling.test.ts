@@ -61,6 +61,24 @@ describe('CPU testbench assertions', () => {
     ]);
   });
 
+  it('rejects trailing tokens on register, memory, and output assertions', () => {
+    const state = createInitialState();
+    state.registers.AX = 42;
+    state.memory[0x10] = 42;
+
+    const results = runTestbenchAssertions(
+      'REG AX = 42 unexpected\nMEM [0x10] = 42 unexpected\nOUT 42 unexpected',
+      state,
+      [{ type: 'number', value: 42 }]
+    );
+
+    expect(results.map(({ line, passed, message }) => ({ line, passed, message }))).toEqual([
+      { line: 1, passed: false, message: 'Unsupported assertion syntax' },
+      { line: 2, passed: false, message: 'Unsupported assertion syntax' },
+      { line: 3, passed: false, message: 'Unsupported assertion syntax' },
+    ]);
+  });
+
   it('rejects malformed halt-state assertions instead of treating them as false', () => {
     const state = createInitialState();
     const validFalse = runTestbenchAssertions('HALTED false', state, []);
