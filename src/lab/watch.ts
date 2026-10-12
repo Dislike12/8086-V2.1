@@ -45,8 +45,9 @@ function evaluateExpression(expression: string, state: CPUState): number {
   }
 
   const flags = getFlags(state.registers.FLAGS);
-  if (trimmed in flags) {
-    return flags[trimmed as keyof typeof flags] ? 1 : 0;
+  const flagName = trimmed.toUpperCase();
+  if (Object.prototype.hasOwnProperty.call(flags, flagName)) {
+    return flags[flagName as keyof typeof flags] ? 1 : 0;
   }
 
   const memValue = parseMemoryExpression(trimmed, state);
