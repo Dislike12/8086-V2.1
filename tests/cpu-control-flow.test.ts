@@ -44,3 +44,25 @@ describe('CPU control flow and stack', () => {
     expect(getFlags(finalState.registers.FLAGS).CF).toBe(true);
   });
 });
+
+describe('CPU arithmetic with carry and borrow', () => {
+  it('computes ADC signed overflow from the original source and carry-in', () => {
+    const program = assemble('MOV AX, 0x8000\nSTC\nADC AX, 0x7FFF\nHLT');
+    const { finalState } = runProgram(program);
+
+    expect(program.errors).toEqual([]);
+    expect(finalState.error).toBeNull();
+    expect(finalState.registers.AX).toBe(0);
+    expect(getFlags(finalState.registers.FLAGS)).toMatchObject({ CF: true, AF: true, OF: false, ZF: true });
+  });
+
+  it('computes SBB signed overflow from the original source and borrow-in', () => {
+    const program = assemble('MOV AX, 0x8000\nSTC\nSBB AX, 0x7FFF\nHLT');
+    const { finalState } = runProgram(program);
+
+    expect(program.errors).toEqual([]);
+    expect(finalState.error).toBeNull();
+    expect(finalState.registers.AX).toBe(0);
+    expect(getFlags(finalState.registers.FLAGS)).toMatchObject({ CF: false, AF: true, OF: true, ZF: true });
+  });
+});
