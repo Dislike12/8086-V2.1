@@ -107,6 +107,40 @@ function setFlagsSub(a: number, b: number, result: number): number {
   return flags;
 }
 
+function setFlagsAdc(a: number, b: number, carry: number, result: number): number {
+  const res16 = mask16(result);
+  let flags = baseResultFlags(res16);
+
+  if (result > WORD_MASK) {
+    flags |= FLAG_CF;
+  }
+  if ((a & 0xF) + (b & 0xF) + carry > 0xF) {
+    flags |= FLAG_AF;
+  }
+  if ((~(a ^ b) & (a ^ res16) & 0x8000) !== 0) {
+    flags |= FLAG_OF;
+  }
+
+  return flags;
+}
+
+function setFlagsSbb(a: number, b: number, borrow: number, result: number): number {
+  const res16 = mask16(result);
+  let flags = baseResultFlags(res16);
+
+  if ((a & WORD_MASK) < (b & WORD_MASK) + borrow) {
+    flags |= FLAG_CF;
+  }
+  if ((a & 0xF) < (b & 0xF) + borrow) {
+    flags |= FLAG_AF;
+  }
+  if (((a ^ b) & (a ^ res16) & 0x8000) !== 0) {
+    flags |= FLAG_OF;
+  }
+
+  return flags;
+}
+
 function setFlagsLogic(result16: number): number {
   return baseResultFlags(result16);
 }
@@ -369,10 +403,10 @@ export function executeInstruction(
         const value = resolveValue(newState, operands[1]);
         const carry = (newState.registers.FLAGS & FLAG_CF) ? 1 : 0;
         const a = newState.registers[dest];
-        const b = (value & WORD_MASK) + carry;
-        const result = a + b;
+        const b = value & WORD_MASK;
+        const result = a + b + carry;
         newState.registers[dest] = mask16(result);
-        newState.registers.FLAGS = setFlagsAdd(a, b, result);
+        newState.registers.FLAGS = setFlagsAdc(a, b, carry, result);
         newState.registers.IP++;
         break;
       }
@@ -398,10 +432,10 @@ export function executeInstruction(
         const value = resolveValue(newState, operands[1]);
         const borrow = (newState.registers.FLAGS & FLAG_CF) ? 1 : 0;
         const a = newState.registers[dest];
-        const b = (value & WORD_MASK) + borrow;
-        const result = a - b;
+        const b = value & WORD_MASK;
+        const result = a - b - borrow;
         newState.registers[dest] = mask16(result);
-        newState.registers.FLAGS = setFlagsSub(a, b, result);
+        newState.registers.FLAGS = setFlagsSbb(a, b, borrow, result);
         newState.registers.IP++;
         break;
       }
