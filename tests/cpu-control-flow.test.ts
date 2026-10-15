@@ -65,4 +65,28 @@ describe('CPU arithmetic with carry and borrow', () => {
     expect(finalState.registers.AX).toBe(0);
     expect(getFlags(finalState.registers.FLAGS)).toMatchObject({ CF: false, AF: true, OF: true, ZF: true });
   });
+
+  it('keeps ADC carry and auxiliary carry when both 16-bit operands wrap', () => {
+    const program = assemble('MOV AX, 0xFFFF\nSTC\nADC AX, 0xFFFF\nHLT');
+    const { finalState } = runProgram(program);
+
+    expect(program.errors).toEqual([]);
+    expect(finalState.error).toBeNull();
+    expect(finalState.registers.AX).toBe(0xFFFF);
+    expect(getFlags(finalState.registers.FLAGS)).toMatchObject({
+      CF: true, PF: true, AF: true, ZF: false, SF: true, OF: false,
+    });
+  });
+
+  it('keeps SBB borrow and auxiliary borrow when the source plus borrow wraps', () => {
+    const program = assemble('MOV AX, 0\nSTC\nSBB AX, 0xFFFF\nHLT');
+    const { finalState } = runProgram(program);
+
+    expect(program.errors).toEqual([]);
+    expect(finalState.error).toBeNull();
+    expect(finalState.registers.AX).toBe(0);
+    expect(getFlags(finalState.registers.FLAGS)).toMatchObject({
+      CF: true, PF: true, AF: true, ZF: true, SF: false, OF: false,
+    });
+  });
 });
