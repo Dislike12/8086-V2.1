@@ -28,3 +28,25 @@ jobs:
         run: npm run typecheck
       - name: Build production app
         run: npm run build
+      - name: Smoke-test production preview
+        run: |
+          preview_log="$(mktemp)"
+          ./node_modules/.bin/vite preview --host 127.0.0.1 --port 4173 --strictPort >"$preview_log" 2>&1 &
+          preview_pid=$!
+          trap 'kill "$preview_pid" 2>/dev/null || true; rm -f "$preview_log" /tmp/x86-studio-preview.html' EXIT
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4173/ -o /tmp/x86-studio-preview.html; then
+              break
+            fi
+            if ! kill -0 "$preview_pid" 2>/dev/null; then
+              cat "$preview_log"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          test -s /tmp/x86-studio-preview.html
+          grep -Fq '<title>x86 Studio - Virtual 8086 Programming IDE</title>' /tmp/x86-studio-preview.html
+          grep -Fq 'id="root"' /tmp/x86-studio-preview.html
+          rm -f /tmp/x86-studio-preview.html
