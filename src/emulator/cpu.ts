@@ -307,11 +307,10 @@ function resolveInterruptTarget(
 }
 
 function getPortAddress(portValue: number): number {
-  const port = portValue & 0xFF;
-  if (port >= IO_PORT_COUNT) {
-    throw new Error(`Invalid I/O port: ${port}`);
+  if (!Number.isInteger(portValue) || portValue < 0 || portValue >= IO_PORT_COUNT) {
+    throw new Error(`Invalid I/O port: ${portValue}`);
   }
-  return IO_PORT_BASE + port * 2;
+  return IO_PORT_BASE + portValue * 2;
 }
 
 function resolveValue(state: CPUState, operand: string): number {
